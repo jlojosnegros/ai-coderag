@@ -1,0 +1,112 @@
+---
+pre-commit:
+  commands:
+    check-readme-no-mermaid:
+      run: |
+        if git show :README.md 2>/dev/null | grep -q '```mermaid'; then
+          echo "ERROR: README.md contains inline Mermaid blocks."
+          echo "       Diagrams must live in docs/diagrams/*.mmd and be embedded as SVGs."
+          echo "       Run: just diagrams && git add docs/diagrams/*.svg"
+          exit 1
+        fi
+    check-diagram-svgs:
+      run: |
+        fail=0
+        for mmd in $(git diff --cached --name-only --diff-filter=ACM | grep '\.mmd$' || true); do
+          svg="${mmd%.mmd}.svg"
+          if ! git diff --cached --name-only | grep -qxF "$svg"; then
+            echo "ERROR: $mmd was added/modified but $svg is not staged."
+            echo "       Run: just diagrams && git add $svg"
+            fail=1
+          fi
+        done
+        for mmd in $(git diff --cached --name-only --diff-filter=D | grep '\.mmd$' || true); do
+          svg="${mmd%.mmd}.svg"
+          if ! git diff --cached --name-only --diff-filter=D | grep -qxF "$svg"; then
+            echo "ERROR: $mmd was deleted but $svg is not staged for deletion."
+            echo "       Run: git rm $svg"
+            fail=1
+          fi
+        done
+        if [ "$fail" = "1" ]; then
+          echo ""
+          echo "Hint: 'just diagrams' regenerates all SVGs."
+          echo "      Requires mmdc: npm install -g @mermaid-js/mermaid-cli"
+          exit 1
+        fi
+    check-readme-diagram-refs:
+      run: |
+        # When README.md is staged, enforce two invariants:
+        #   1. Every SVG referenced in README.md must have its .mmd and .svg on disk
+        #      and the SVG must not be older than its .mmd source.
+        #   2. Every SVG reference removed from README.md must have its .mmd and .svg
+        #      staged for deletion in the same commit.
+        git diff --cached --name-only | grep -qxF "README.md" || exit 0
+
+        head_svgs=$(git show HEAD:README.md 2>/dev/null | grep -oE 'docs/diagrams/[^)]+\.svg' || true)
+        staged_svgs=$(git show :README.md | grep -oE 'docs/diagrams/[^)]+\.svg' || true)
+
+        fail=0
+
+        # All references in staged README must have existing, up-to-date source files
+        while IFS= read -r svg; do
+          [ -z "$svg" ] && continue
+          mmd="${svg%.svg}.mmd"
+
+          if [ ! -f "$mmd" ]; then
+            echo "ERROR: $svg is referenced in README.md but $mmd does not exist."
+            fail=1
+          elif [ ! -f "$svg" ]; then
+            echo "ERROR: $svg is referenced in README.md but has not been rendered yet."
+            echo "       Run: just diagrams && git add $svg"
+            fail=1
+          elif [ "$mmd" -nt "$svg" ]; then
+            echo "ERROR: $svg is referenced in README.md but is outdated (source .mmd is newer)."
+            echo "       Run: just diagrams && git add $svg"
+            fail=1
+          fi
+        done <<< "$staged_svgs"
+
+        # Removed references: in HEAD but not in staged README → files must be deleted too
+        while IFS= read -r svg; do
+          [ -z "$svg" ] && continue
+          echo "$staged_svgs" | grep -qxF "$svg" && continue
+
+          mmd="${svg%.svg}.mmd"
+          svg_deleted=$(git diff --cached --name-status | awk -F'\t' -v f="$svg" '$1=="D" && $2==f')
+          mmd_deleted=$(git diff --cached --name-status | awk -F'\t' -v f="$mmd" '$1=="D" && $2==f')
+
+          if [ -z "$svg_deleted" ] || [ -z "$mmd_deleted" ]; then
+            echo "ERROR: $svg was removed from README.md but source files are not staged for deletion."
+            echo "       Run: git rm $svg $mmd"
+            fail=1
+          fi
+        done <<< "$head_svgs"
+
+        [ "$fail" = "1" ] && exit 1 || exit 0
+
+commit-msg:
+  commands:
+    validate-conventional-commit:
+      run: |
+        # Read the commit message from the file git passes to the hook
+        MSG=$(cat {1})
+
+        # Regex matching: type(optional-scope): description
+        # To restrict scopes to a fixed list, replace \(.+\) with the commented pattern below
+        # PATTERN="^(test|feat|fix|docs|refactor|ci|style|chore)(\((github|gitlab|jira|k8s|tools|types|utils|validations|resources|pipelines)\))?: .+"
+        PATTERN="^(test|feat|fix|docs|refactor|ci|style|chore)(\(.+\))?: .+"
+
+        if ! echo "$MSG" | grep -qE "$PATTERN"; then
+          echo ""
+          echo "ERROR: commit message does not follow Conventional Commits."
+          echo ""
+          echo "  Got: $MSG"
+          echo ""
+          echo "  Expected format: type(scope): description"
+          echo "  Example:         feat(github): add midstream release tool"
+          echo ""
+          echo "  Allowed types: test, feat, fix, docs, refactor, ci, style, chore"
+          echo ""
+          exit 1
+        fi

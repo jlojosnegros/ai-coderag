@@ -1,0 +1,23 @@
+# Only allow releases from the main branch
+allow-branch = ["main"]
+
+# Do not publish to crates.io — this is an internal tool
+publish = false
+
+# Generate CHANGELOG.md before cargo-release makes its version bump commit.
+# cargo-release uses "git commit -am" which automatically stages all modified
+# tracked files, so CHANGELOG.md ends up in the same commit as Cargo.toml.
+# {{version}} is replaced by cargo-release with the new version (e.g. "0.2.0").
+pre-release-hook = [
+  "sh", "-c",
+  "git-cliff --config .config/cliff.toml --tag {{version}} --output CHANGELOG.md"
+]
+
+# Replace version references in README.md.
+# cargo-release stages and commits these changes together with Cargo.toml
+# and CHANGELOG.md in the single release commit.
+[[pre-release-replacements]]
+file    = "README.md"
+search  = "v[0-9]+\\.[0-9]+\\.[0-9]+"
+replace = "v{{version}}"
+exactly = 2

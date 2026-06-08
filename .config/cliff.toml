@@ -1,0 +1,83 @@
+[changelog]
+# Header printed once at the top of the full CHANGELOG.md
+header = """
+# Changelog
+
+All notable changes to this project will be documented in this file.
+Versions follow [Semantic Versioning](https://semver.org/).
+
+"""
+
+# Template rendered once per version block.
+# Uses Tera syntax (similar to Jinja2).
+body = """
+{% if version %}\
+## [{{ version | trim_start_matches(pat="v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+{% else %}\
+## [Unreleased]
+{% endif %}\
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim | upper_first }}
+{% for scope, scoped_commits in commits | group_by(attribute="scope") %}
+#### {{ scope | upper_first }}
+{% for commit in scoped_commits %}\
+- {{ commit.message | upper_first }}
+{% endfor %}
+{% endfor %}\
+{% for commit in commits %}\
+{% if not commit.scope %}- {{ commit.message | upper_first }}
+{% endif %}\
+{% endfor %}
+{% endfor %}\n
+"""
+
+# Remove leading/trailing whitespace from each version block
+trim = true
+
+# Nothing printed at the bottom of the file
+footer = ""
+
+[git]
+# Parse commits following the Conventional Commits spec
+conventional_commits = true
+
+# Ignore commits that do not follow the spec (no prefix, free-form messages)
+filter_unconventional = true
+
+# Do not split a single commit message into multiple entries
+split_commits = false
+
+# Map commit type prefixes to changelog section titles.
+# Order matters: first match wins.
+commit_parsers = [
+  # New user-visible functionality
+  { message = "^feat", group = "Features" },
+
+  # Bug fixes
+  { message = "^fix", group = "Bug Fixes" },
+
+  # Documentation changes (kept in changelog but in its own section)
+  { message = "^docs", group = "Documentation" },
+
+  # Internal refactors — visible to contributors, less relevant to end users
+  { message = "^refactor", group = "Refactoring" },
+
+  # The following types are intentionally excluded from the changelog:
+  # CI pipeline changes are an implementation detail, not user-facing
+  { message = "^ci", skip = true },
+  # Code style/formatting, no behavior change
+  { message = "^style", skip = true },
+  # Maintenance tasks (dependency bumps, tooling)
+  { message = "^chore", skip = true },
+]
+
+# Drop commits that matched a skip = true parser above
+filter_commits = true
+
+# Only consider tags matching this pattern as version boundaries.
+# Matches v0.1.0, v1.2.3, etc.
+tag_pattern = "v[0-9]*"
+
+# Within each version section, show newest commits first
+sort_commits = "newest"
+

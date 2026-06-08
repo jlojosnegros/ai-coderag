@@ -1,0 +1,15 @@
+too-many-lines-threshold = 80
+cognitive-complexity-threshold = 10
+too-many-arguments-threshold = 5
+max-fn-params-bools = 2
+max-struct-bools = 2
+enum-variant-size-threshold = 128
+future-size-threshold = 4096
+type-complexity-threshold = 200
+msrv = "1.85"
+avoid-breaking-exported-api = false
+doc-valid-idents = [
+    "Konflux", "Kubernetes", "OpenShift", "GitLab", "GitHub", "Jira",
+    "gRPC", "OAuth", "IPv4", "IPv6", "OSSM", "MCP", "IIB", "FBC", "OCP",
+    "JSON", "YAML", "HTTP", "HTTPS", "REST", "API", "CI", "CD",
+]

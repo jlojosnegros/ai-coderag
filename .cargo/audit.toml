@@ -1,0 +1,11 @@
+# cargo-audit configuration
+# List advisories from transitive dependencies we cannot control.
+# Format: "RUSTSEC-YYYY-NNNN", # reason: crate name + why ignored
+
+[advisories]
+ignore = [
+    "RUSTSEC-2026-0097", # rand unsound with custom logger — transitive via kube/reqwest
+    "RUSTSEC-2026-0098", # webpki URI name constraints — transitive via rustls-webpki
+    "RUSTSEC-2026-0099", # webpki wildcard name constraints — transitive via rustls-webpki
+    "RUSTSEC-2026-0104", # webpki CRL panic — transitive via rustls-webpki
+]
