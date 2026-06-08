@@ -1,0 +1,47 @@
+name: PR Check
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+concurrency:
+  group: pr-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  conventional-title:
+    name: Validate PR title follows Conventional Commits
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    steps:
+      - uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # Allowed commit types — must match the parsers defined in cliff.toml
+          types: |
+            feat
+            fix
+            docs
+            refactor
+            ci
+            style
+            chore
+          # Scopes are optional but validated against this list when provided.
+          # Remove this block to allow any scope freely.
+          # scopes: |
+          #   github
+          #   tools
+          #   types
+          #   utils
+          #   validations
+          #   resources
+          #   pipelines
+
+          # Require the description part to start with a lowercase letter
+          requireScope: false
+          subjectPattern: ^[a-z].+$
+          subjectPatternError: |
+            The PR title description must start with a lowercase letter.
+            Example: "feat(github): add midstream release tool"

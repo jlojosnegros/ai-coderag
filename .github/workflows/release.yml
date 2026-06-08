@@ -1,0 +1,115 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. v0.1.0)'
+        required: true
+
+jobs:
+  check-version:
+    name: Verify tag matches Cargo.toml version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare versions
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          CARGO_VERSION=$(grep '^version' Cargo.toml | head -1 | cut -d'"' -f2)
+          if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
+            echo "ERROR: tag '$GITHUB_REF_NAME' does not match Cargo.toml version '$CARGO_VERSION'"
+            echo "Update Cargo.toml version to $TAG_VERSION before tagging."
+            exit 1
+          fi
+          echo "OK: tag and Cargo.toml both at $CARGO_VERSION"
+
+  build-linux:
+    name: Linux (x86_64 musl)
+    needs: check-version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Downloads pre-built binaries from GitHub releases (~5s vs ~3min for cargo install)
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cross,just
+
+      - name: Add musl target
+        run: rustup target add x86_64-unknown-linux-musl
+
+      - name: Build (static musl)
+        run: just build-static
+
+      - name: Rename binary
+        run: cp target/x86_64-unknown-linux-musl/release/mcp-konflux mcp-konflux-linux-x86_64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mcp-konflux-linux-x86_64
+          path: mcp-konflux-linux-x86_64
+
+  build-macos:
+    name: macOS (${{ matrix.target }})
+    needs: check-version
+    runs-on: ${{ matrix.runner }}
+    continue-on-error: true
+    strategy:
+      matrix:
+        include:
+          - runner: macos-latest  # Apple Silicon
+            target: aarch64-apple-darwin
+            asset: mcp-konflux-macos-arm64
+          # - runner: macos-13      # Intel
+          #   target: x86_64-apple-darwin
+          #   asset: mcp-konflux-macos-x86_64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Rename binary
+        run: cp target/${{ matrix.target }}/release/mcp-konflux ${{ matrix.asset }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+
+  release:
+    name: Create GitHub Release
+    needs: [build-linux, build-macos]
+    if: ${{ always() && needs.build-linux.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Generate release notes
+        uses: orhun/git-cliff-action@v4
+        id: cliff
+        with:
+          config: .config/cliff.toml
+          args: --latest --strip header
+
+      - name: Create release and upload binaries
+        uses: softprops/action-gh-release@v2
+        with:
+          body: ${{ steps.cliff.outputs.content }}
+          files: mcp-konflux-*
