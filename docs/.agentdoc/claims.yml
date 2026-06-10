@@ -9,4 +9,247 @@ _meta:
 
 _retired_ids: []
 
-claims: []
+claims:
+  # --- architecture-summary ---
+
+  - id: arch-1
+    type: data_flow
+    scope: overlay
+    claim: "The index pipeline is: collect_files → read file → LineChunker.chunk_file → FastembedProvider.embed (batch) → LanceDbStore.upsert."
+    source: "src/main.rs"
+    provenance:
+      origin: inferred
+      confidence: high
+    stale: false
+
+  - id: arch-2
+    type: constraint
+    scope: overlay
+    claim: "The cosine similarity formula '1.0 - l2_distance / 2.0' is only correct when both vectors are unit-norm; LanceDbStore never validates this."
+    source: "src/store/mod.rs"
+    provenance:
+      origin: inferred
+      confidence: high
+    stale: false
+
+  - id: arch-3
+    type: technology
+    scope: overlay
+    claim: "The embedding model is JinaEmbeddingsV2BaseCode, downloaded to ~/.cache/fastembed/ on first run (~600 MB)."
+    source: "src/embed/mod.rs"
+    provenance:
+      origin: inferred
+      confidence: high
+    stale: false
+
+  - id: arch-4
+    type: boundary
+    scope: overlay
+    claim: "src/lib.rs re-exports all public types and traits; both src/main.rs and integration tests import exclusively from coderag::."
+    source: "src/lib.rs"
+    provenance:
+      origin: inferred
+      confidence: high
+    stale: false
+
+  # --- module-map ---
+
+  - id: module-1
+    type: pattern
+    scope: overlay
+    claim: "All file-traversal logic (collect_files, the three traversal modes, the extension allow-list) lives in src/main.rs, not in a separate module."
+    source: "src/main.rs"
+    provenance:
+      origin: inferred
+      confidence: high
+    stale: false
+
+  - id: module-2
+    type: technology
+    scope: overlay
+    claim: "LanceDB appends a '_distance' column (L2) to vector search results; LanceDbStore converts it to a [0,1] cosine score."
+    source: "src/store/mod.rs"
+    provenance:
+      origin: inferred
+      confidence: high
+    stale: false
+
+  - id: module-3
+    type: pattern
+    scope: overlay
+    claim: "FastembedProvider derives its output dimension by embedding a probe string at init time, because fastembed v5 removed get_embedding_dimension()."
+    source: "src/embed/mod.rs"
+    provenance:
+      origin: inferred
+      confidence: high
+    stale: false
+
+  # --- key-patterns ---
+
+  - id: pattern-1
+    type: pattern
+    scope: overlay
+    claim: "fastembed::TextEmbedding::try_new and embed are both called inside tokio::task::spawn_blocking because they are synchronous and CPU-bound."
+    source: "src/embed/mod.rs"
+    provenance:
+      origin: inferred
+      confidence: high
+    stale: false
+
+  - id: pattern-2
+    type: pattern
+    scope: overlay
+    claim: "TextEmbedding is wrapped in Arc<Mutex<TextEmbedding>> to enable the Arc clone to be moved into spawn_blocking while FastembedProvider remains Send + Sync."
+    source: "src/embed/mod.rs"
+    provenance:
+      origin: inferred
+      confidence: high
+    stale: false
+
+  - id: pattern-3
+    type: constraint
+    scope: overlay
+    claim: "ChunkId orphans are not garbage-collected: moving code to a different file or line number produces a new ChunkId and the old one remains in the store."
+    source: "src/domain.rs"
+    provenance:
+      origin: inferred
+      confidence: medium
+    stale: false
+
+  - id: pattern-4
+    type: constraint
+    scope: overlay
+    claim: "The file extension allow-list is hard-coded as a const slice in collect_files: [\"rs\", \"cc\", \"cpp\", \"cxx\", \"c\", \"h\", \"hpp\"]."
+    source: "src/main.rs"
+    provenance:
+      origin: inferred
+      confidence: high
+    stale: false
+
+  - id: pattern-5
+    type: pattern
+    scope: overlay
+    claim: "The three traversal modes (--include list, --exclude-mode git-ignore, default plain WalkDir) are mutually exclusive via clap conflicts_with annotations."
+    source: "src/main.rs"
+    provenance:
+      origin: inferred
+      confidence: high
+    stale: false
+
+  - id: pattern-6
+    type: pattern
+    scope: overlay
+    claim: "The Arrow Schema is constructed once in LanceDbStore::open and cached in self.schema: Arc<Schema>; it is cloned (not rebuilt) on every upsert and search."
+    source: "src/store/mod.rs"
+    provenance:
+      origin: inferred
+      confidence: high
+    stale: false
+
+  # --- how-to-extend ---
+
+  - id: extend-1
+    type: constraint
+    scope: overlay
+    claim: "Any new EmbeddingProvider implementation must normalize output vectors to unit norm; failing to do so causes silently wrong cosine scores."
+    source: "src/embed/mod.rs"
+    provenance:
+      origin: inferred
+      confidence: high
+    stale: false
+
+  - id: extend-2
+    type: pattern
+    scope: overlay
+    claim: "Language::from_str has type Err = std::convert::Infallible; unknown extensions produce Language::Unknown rather than an error."
+    source: "src/domain.rs"
+    provenance:
+      origin: inferred
+      confidence: high
+    stale: false
+
+  # --- type-conventions ---
+
+  - id: type-1
+    type: constraint
+    scope: overlay
+    claim: "Chunk.embedding must be Some before calling LanceDbStore::upsert; to_record_batch returns CoderagError::Store if any chunk has embedding: None."
+    source: "src/store/mod.rs"
+    provenance:
+      origin: inferred
+      confidence: high
+    stale: false
+
+  - id: type-2
+    type: pattern
+    scope: overlay
+    claim: "There is no JSON or TOML serialization layer; the only serialization is Arrow column-level encoding inside LanceDbStore::to_record_batch."
+    source: "src/store/mod.rs"
+    provenance:
+      origin: inferred
+      confidence: high
+    stale: false
+
+  - id: type-3
+    type: pattern
+    scope: overlay
+    claim: "ChunkId must be constructed via ChunkId::compute; constructing it from an arbitrary string is not prevented by the type system but breaks idempotency."
+    source: "src/domain.rs"
+    provenance:
+      origin: inferred
+      confidence: medium
+    stale: false
+
+  # --- error-handling ---
+
+  - id: error-1
+    type: pattern
+    scope: overlay
+    claim: "Unreadable files during indexing are logged with tracing::warn! and skipped; they do not return an error to main."
+    source: "src/main.rs"
+    provenance:
+      origin: inferred
+      confidence: high
+    stale: false
+
+  - id: error-2
+    type: pattern
+    scope: overlay
+    claim: "CoderagError::Embedding(String) and Store(String) always stringify underlying errors at the adapter boundary; structured error data is not preserved."
+    source: "src/error.rs"
+    provenance:
+      origin: inferred
+      confidence: high
+    stale: false
+
+  # --- testing-pattern ---
+
+  - id: test-1
+    type: constraint
+    scope: overlay
+    claim: "The integration test must be run with --test-threads=1 to avoid concurrent model-load contention with fastembed."
+    source: "tests/integration_test.rs"
+    provenance:
+      origin: inferred
+      confidence: high
+    stale: false
+
+  - id: test-2
+    type: pattern
+    scope: overlay
+    claim: "No mock implementations exist; integration tests use real FastembedProvider and LanceDbStore instances against tempfile-backed databases."
+    source: "tests/integration_test.rs"
+    provenance:
+      origin: inferred
+      confidence: high
+    stale: false
+
+  - id: test-3
+    type: pattern
+    scope: overlay
+    claim: "The integration test fixture corpus is tests/fixtures/mini-rust/src/ (io.rs, config.rs, processor.rs); it is not a real Rust project."
+    source: "tests/integration_test.rs"
+    provenance:
+      origin: inferred
+      confidence: high
+    stale: false
