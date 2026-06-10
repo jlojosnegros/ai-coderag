@@ -99,3 +99,5 @@ tags
 bitacora.md
 .fastembed_cache
 rlog_*.log
+.coderag
+docs/.agentdoc/status.json

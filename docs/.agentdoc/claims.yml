@@ -1,0 +1,12 @@
+# agentdoc claims registry
+# Human-readable: yes. Committed to git: recommended.
+# To regenerate: /agentdoc draft
+
+_meta:
+  scan: "f7b1beba1fff08bfa2bf81d8e42b0ca01e9181a1"
+  generated_by: "agentdoc"
+  version: "1"
+
+_retired_ids: []
+
+claims: []
