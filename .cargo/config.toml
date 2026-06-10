@@ -1,2 +1,5 @@
 [build]
 rustdocflags = ["-D", "warnings"]
+rustc-wrapper = "sccache"
+# sccache is incompatible with incremental compilation
+incremental = false

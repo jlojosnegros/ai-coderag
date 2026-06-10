@@ -1,5 +1,10 @@
 [advisories]
 unmaintained = "all"
+ignore = [
+    # paste is archived by its author (dtolnay), used by datafusion (lancedb dep).
+    # No upgrade available; ignoring since we cannot control this transitive dependency.
+    "RUSTSEC-2024-0436",
+]
 
 [licenses]
 allow = [
@@ -12,6 +17,8 @@ allow = [
     "CC0-1.0",
     "ISC",
     "MIT",
+    "MPL-2.0",       # option-ext, transitive dep via fastembed → hf-hub → dirs → dirs-sys
+    "NCSA",          # libfuzzer-sys, transitive dep via fastembed → image → ravif → rav1e
     "Unicode-3.0",
     "Unlicense",
     "Zlib",
