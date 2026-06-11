@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::{Chunk, ChunkId, ChunkMetadata, Language};
+use crate::{Chunk, ChunkId, ChunkMetadata, ChunkType, Language};
 
 pub struct LineChunker {
     /// Number of lines per chunk,
@@ -54,6 +54,9 @@ impl LineChunker {
                         line_start: start as u32,
                         line_end: end as u32,
                         language: language.clone(),
+                        chunk_type: ChunkType::FallbackLines,
+                        symbol_name: None,
+                        parent_scope: None,
                     },
                     embedding: None,
                 });

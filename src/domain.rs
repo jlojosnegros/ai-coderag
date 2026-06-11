@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{convert::Infallible, path::PathBuf, str::FromStr};
 
 use sha2::{Digest, Sha256};
 
@@ -54,12 +54,63 @@ impl std::str::FromStr for Language {
     }
 }
 
+/// Semantic classification of a chunk, determined by the parser
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChunkType {
+    /// A free function at module scope
+    Function,
+    /// A method inside an `impl` block
+    Method,
+    /// A struct or enum definition
+    Struct,
+    /// A trait definition
+    Trait,
+    /// An impl block with no extractable methods
+    Impl,
+    /// Produced by LineChunker when AST parsing was not possible.
+    FallbackLines,
+}
+
+impl ChunkType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Function => "function",
+            Self::Method => "method",
+            Self::Struct => "struct",
+            Self::Trait => "trait",
+            Self::Impl => "impl",
+            Self::FallbackLines => "fallback_lines",
+        }
+    }
+}
+
+impl FromStr for ChunkType {
+    type Err = Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "function" => Self::Function,
+            "method" => Self::Method,
+            "struct" => Self::Struct,
+            "trait" => Self::Trait,
+            "impl" => Self::Impl,
+            _ => Self::FallbackLines,
+        })
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ChunkMetadata {
     pub file_path: PathBuf,
     pub line_start: u32,
     pub line_end: u32,
     pub language: Language,
+    /// How this chunk was produced
+    pub chunk_type: ChunkType,
+    /// Name of the symbol (function name, struct name, etc). None for fallback
+    pub symbol_name: Option<String>,
+    /// Enclosing scope for methods: type name of the impl block
+    pub parent_scope: Option<String>,
 }
 
 /// Fundamental unit of storage and retrieval.
