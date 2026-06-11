@@ -5,12 +5,13 @@ allow-branch = ["main"]
 publish = false
 
 # Generate CHANGELOG.md before cargo-release makes its version bump commit.
-# cargo-release uses "git commit -am" which automatically stages all modified
-# tracked files, so CHANGELOG.md ends up in the same commit as Cargo.toml.
+# cargo-release uses "git commit -am" which only stages already-tracked files.
+# We must run "git add CHANGELOG.md" explicitly so that a newly created
+# CHANGELOG.md is included in the release commit.
 # {{version}} is replaced by cargo-release with the new version (e.g. "0.2.0").
 pre-release-hook = [
   "sh", "-c",
-  "git-cliff --config .config/cliff.toml --tag {{version}} --output CHANGELOG.md"
+  "git-cliff --config .config/cliff.toml --tag {{version}} --output CHANGELOG.md && git add CHANGELOG.md"
 ]
 
 # Replace version references in README.md.
