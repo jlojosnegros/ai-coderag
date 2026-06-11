@@ -3,7 +3,7 @@
 # To regenerate: /agentdoc draft
 
 _meta:
-  scan: "8684cc1dd3859d978c157b927aba151a67f0ac41"
+  scan: "54e67c6ccf27f5b82b4de8efe5570dbbae7f397b"
   generated_by: "agentdoc"
   version: "1"
 
@@ -15,12 +15,12 @@ claims:
   - id: arch-1
     type: data_flow
     scope: overlay
-    claim: "The index pipeline is: collect_files → read file → LineChunker.chunk_file → FastembedProvider.embed (batch) → LanceDbStore.upsert."
+    claim: "The index pipeline is: collect_files → read file → AstChunker.chunk_file (dispatches to LanguagePlugin, falls back to LineChunker on empty result) → FastembedProvider.embed (batch) → LanceDbStore.upsert."
     source: "src/main.rs"
     provenance:
       origin: inferred
       confidence: high
-    stale: true
+    stale: false
 
   - id: arch-2
     type: constraint

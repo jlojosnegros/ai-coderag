@@ -1,9 +1,9 @@
 ---
 agentdoc:
-  scan: "8684cc1dd3859d978c157b927aba151a67f0ac41"
-  freshness: 33
+  scan: "54e67c6ccf27f5b82b4de8efe5570dbbae7f397b"
+  freshness: 100
   human_input: 0
-  completeness: 85
+  completeness: 93
   inferred_sections:
     - id: architecture-summary
       heading: "## Architecture in One Paragraph"
@@ -29,8 +29,7 @@ agentdoc:
     - "src/embed/mod.rs"
     - "src/store/mod.rs"
     - "Cargo.toml"
-  stale_sections:
-    - "## Architecture in One Paragraph"
+  stale_sections: []
 ---
 
 # Agent Overlay — coderag
