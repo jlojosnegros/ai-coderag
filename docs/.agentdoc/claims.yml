@@ -3,7 +3,7 @@
 # To regenerate: /agentdoc draft
 
 _meta:
-  scan: "f7b1beba1fff08bfa2bf81d8e42b0ca01e9181a1"
+  scan: "8684cc1dd3859d978c157b927aba151a67f0ac41"
   generated_by: "agentdoc"
   version: "1"
 
@@ -20,7 +20,7 @@ claims:
     provenance:
       origin: inferred
       confidence: high
-    stale: false
+    stale: true
 
   - id: arch-2
     type: constraint

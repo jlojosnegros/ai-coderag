@@ -1,7 +1,7 @@
 ---
 agentdoc:
-  scan: "f7b1beba1fff08bfa2bf81d8e42b0ca01e9181a1"
-  freshness: 100
+  scan: "8684cc1dd3859d978c157b927aba151a67f0ac41"
+  freshness: 33
   human_input: 0
   completeness: 85
   inferred_sections:
@@ -29,14 +29,15 @@ agentdoc:
     - "src/embed/mod.rs"
     - "src/store/mod.rs"
     - "Cargo.toml"
-  stale_sections: []
+  stale_sections:
+    - "## Architecture in One Paragraph"
 ---
 
 # Agent Overlay — coderag
 
 ## Architecture in One Paragraph
 
-coderag is a CLI tool for semantic code search using local embeddings. The `index` subcommand walks source files (`.rs`, `.cc`, `.cpp`, `.cxx`, `.c`, `.h`, `.hpp`) via one of three traversal modes, reads each file, splits it into overlapping 40-line chunks with 8-line overlap using `LineChunker` (`src/chunker.rs`), batches those chunks through `FastembedProvider` (`src/embed/mod.rs`) which runs the `JinaEmbeddingsV2BaseCode` ONNX model inside `tokio::task::spawn_blocking` to avoid blocking the async runtime, normalizes each output vector to unit norm, and upserts the embedded chunks into `LanceDbStore` (`src/store/mod.rs`) using LanceDB's `merge_insert` keyed on `ChunkId` for idempotent re-indexing. The `query` subcommand embeds the query text through the same `FastembedProvider`, runs an ANN vector search via `LanceDbStore::search_vector`, converts L2 distances to cosine similarity scores (`1.0 - l2 / 2.0`, valid only for unit-norm vectors), and prints ranked `ScoredChunk` results. Domain types (`Chunk`, `ChunkId`, `ChunkMetadata`, `Language`, `ScoredChunk`) are in `src/domain.rs`; the port interfaces are `EmbeddingProvider` and `ChunkStore` in `src/traits.rs`; `CoderagError` and `Result<T>` are in `src/error.rs`; `src/lib.rs` re-exports everything so both the binary and integration tests import from `coderag::`.
+coderag is a CLI tool for semantic code search using local embeddings. The `index` subcommand walks source files (`.rs`, `.cc`, `.cpp`, `.cxx`, `.c`, `.h`, `.hpp`) via one of three traversal modes, reads each file, and routes it through `AstChunker` (`src/parser/`), which dispatches to the matching `LanguagePlugin` — `RustPlugin` for `.rs` and `CppPlugin` for C++ extensions — to extract semantic units (functions, methods, structs, traits, classes) as individual chunks using tree-sitter; files with unknown extensions or plugins that return no chunks fall back to `LineChunker` (`src/chunker.rs`) with a 40-line sliding window. Those chunks are batched through `FastembedProvider` (`src/embed/mod.rs`) which runs the `JinaEmbeddingsV2BaseCode` ONNX model inside `tokio::task::spawn_blocking` to avoid blocking the async runtime, normalizes each output vector to unit norm, and upserts the embedded chunks into `LanceDbStore` (`src/store/mod.rs`) using LanceDB's `merge_insert` keyed on `ChunkId` for idempotent re-indexing. The `query` subcommand embeds the query text through the same `FastembedProvider`, runs an ANN vector search via `LanceDbStore::search_vector`, converts L2 distances to cosine similarity scores (`1.0 - l2 / 2.0`, valid only for unit-norm vectors), and prints ranked `ScoredChunk` results with symbol name and chunk type. Domain types (`Chunk`, `ChunkId`, `ChunkMetadata`, `ChunkType`, `Language`, `ScoredChunk`) are in `src/domain.rs`; the port interfaces are `EmbeddingProvider` and `ChunkStore` in `src/traits.rs`; `CoderagError` and `Result<T>` are in `src/error.rs`; `src/lib.rs` re-exports everything so both the binary and integration tests import from `coderag::`.
 
 ## Module Map
 
@@ -47,11 +48,15 @@ coderag is a CLI tool for semantic code search using local embeddings. The `inde
 | `src/traits.rs` | Port layer: `EmbeddingProvider` and `ChunkStore` async traits | Both are `Send + Sync`; `async_trait` macro required for object safety |
 | `src/domain.rs` | Core domain: `Chunk`, `ChunkId`, `ChunkMetadata`, `Language`, `ScoredChunk` | `ChunkId` is content-addressed (SHA-256 of path + line_start + content) |
 | `src/error.rs` | `CoderagError` enum (`thiserror`) + `Result<T>` alias | Only three variants; `Io` uses `#[from]` for automatic `?` conversion |
-| `src/chunker.rs` | `LineChunker`: sliding-window chunker (default: 40 lines, 8-line overlap) | Chunks with fewer than 10 non-whitespace chars are dropped |
+| `src/chunker.rs` | `LineChunker`: sliding-window chunker (default: 40 lines, 8-line overlap) | Fallback inside `AstChunker` for unknown extensions or parse failures; chunks with fewer than 10 non-whitespace chars are dropped |
+| `src/parser/mod.rs` | `LanguagePlugin` trait + `AstChunker` dispatcher + `mod field` grammar field constants | `AstChunker` holds a `Vec<Arc<dyn LanguagePlugin>>` and a `LineChunker` fallback; `mod field` constants (`NAME`, `BODY`, `TYPE`, `DECLARATOR`) protect `child_by_field_name` calls from silent typos |
+| `src/parser/rust.rs` | `RustPlugin`: extracts `function_item`, `impl_item`, `struct_item`, `enum_item`, `trait_item` | Methods inside `impl` blocks get `parent_scope` set to the type name; impl blocks with no methods produce a single `Impl` chunk |
+| `src/parser/cpp.rs` | `CppPlugin`: extracts `function_definition`, `class_specifier`, `struct_specifier` | Function name extracted by walking the nested declarator chain; class methods are not split out individually (whole class body is one chunk) |
 | `src/embed/mod.rs` | `FastembedProvider`: ONNX model wrapper; normalizes embeddings to unit norm | Model load and batch embed both use `spawn_blocking`; dimension derived by embedding a probe string at init |
-| `src/store/mod.rs` | `LanceDbStore`: Arrow RecordBatch schema, `merge_insert` upsert, ANN search | L2 `_distance` from LanceDB converted to cosine similarity; schema cached in `self.schema` |
-| `tests/integration_test.rs` | End-to-end pipeline test (index → query → assert relevance) | Requires model download on first run; run with `--test-threads=1` |
-| `tests/fixtures/mini-rust/` | Small Rust source corpus (3 files) used by integration test | Not a real project — fixture only |
+| `src/store/mod.rs` | `LanceDbStore`: Arrow RecordBatch schema, `merge_insert` upsert, ANN search | L2 `_distance` from LanceDB converted to cosine similarity; schema cached in `self.schema`; all column name literals consolidated into `mod col` constants |
+| `tests/integration_test.rs` | End-to-end pipeline tests (index → query → assert relevance and AST chunk types) | Requires model download on first run; run with `--test-threads=1` |
+| `tests/fixtures/mini-rust/` | Small Rust source corpus (3 files) used by integration tests | Not a real project — fixture only |
+| `tests/fixtures/mini-cpp/` | Small C++ source corpus (io.cpp, io.h, config.cpp) for parser and integration tests | Not compiled — text fixture only |
 
 ## Key Patterns & Conventions
 
@@ -80,6 +85,12 @@ coderag is a CLI tool for semantic code search using local embeddings. The `inde
 
 The file extension allow-list (`["rs", "cc", "cpp", "cxx", "c", "h", "hpp"]`) is hard-coded in `collect_files` as a `const` slice.
 
+### Plugin dispatch via LanguagePlugin
+
+`AstChunker` (`src/parser/mod.rs`) holds a `Vec<Arc<dyn LanguagePlugin>>` and a `LineChunker` fallback. For each file it finds the first plugin whose `file_extensions()` matches, calls `chunk_file`, and returns the result. If the plugin returns an empty `Vec` (parse failure, macros-only file, unknown extension), `AstChunker` logs a debug message and falls through to `LineChunker`. To add a new language: implement `LanguagePlugin` and register it in `AstChunker::new()` — no other changes needed.
+
+Grammar field names used in `child_by_field_name()` calls are consolidated into `pub(super) mod field` constants (`NAME`, `BODY`, `TYPE`, `DECLARATOR`) in `src/parser/mod.rs`. A typo in a field name silently returns `None` at runtime rather than failing at compile time — the constants eliminate that risk. Same rationale as `mod col` in `src/store/mod.rs`.
+
 ### Arrow schema built once, cached
 
 `LanceDbStore::build_schema` constructs the Arrow `Schema` once in `LanceDbStore::open` and stores it in `self.schema: Arc<Schema>`. The embedding column uses `DataType::FixedSizeList` with the dimension as the fixed size — mismatched dimensions cause a runtime error in `to_record_batch`, not a compile-time error.
@@ -102,9 +113,10 @@ The file extension allow-list (`["rs", "cc", "cpp", "cxx", "c", "h", "hpp"]`) is
 
 ### Add support for a new language
 
-1. Add the file extension to the `EXTENSIONS` constant in `collect_files` (`src/main.rs`).
-2. Add a variant to `Language` in `src/domain.rs` and update `from_extension`, `as_str`, and `from_str`. The `Infallible` error type on `from_str` means unknown strings map to `Language::Unknown` — the new variant requires an explicit `match` arm in both `from_extension` and `as_str`.
-3. The compiler will emit exhaustiveness errors in any `match Language { … }` if a variant is missed — use that as a checklist.
+1. Create `src/parser/<lang>.rs`. Implement the `LanguagePlugin` trait (`src/parser/mod.rs`): `file_extensions()` returns the extensions without a leading dot; `chunk_file()` parses the source and returns `Vec<Chunk>` — return an empty `Vec` on failure, `AstChunker` will fall back to `LineChunker` automatically.
+2. Add `mod <lang>;` in `src/parser/mod.rs` and register the plugin in `AstChunker::new()`: `chunker.register(MyPlugin::new());`.
+3. Add the file extension to the `EXTENSIONS` constant in `collect_files` (`src/main.rs`) so the file is visited during indexing.
+4. Add a variant to `Language` in `src/domain.rs` and update `from_extension`, `as_str`, and `from_str`. The compiler's exhaustiveness check on `match Language { … }` will flag any missed arms.
 
 ## Type Conventions
 
@@ -115,6 +127,10 @@ The file extension allow-list (`["rs", "cc", "cpp", "cxx", "c", "h", "hpp"]`) is
 **`ChunkId` is a newtype.** The inner `String` is a hex-encoded SHA-256 hash. Construct via `ChunkId::compute` only — do not build it from arbitrary strings.
 
 **`Language` is a closed, infallible enum.** Unknown file extensions map to `Language::Unknown` at parse time; there is no parse error. `Language::from_str` has `type Err = std::convert::Infallible`.
+
+**`ChunkType` is a closed, infallible enum.** Variants: `Function`, `Method`, `Struct`, `Trait`, `Impl`, `FallbackLines`. `FallbackLines` signals that `LineChunker` produced the chunk, not a language plugin — useful for debugging parser coverage. `from_str` maps unknown strings to `FallbackLines` (infallible). Stored in LanceDB as a UTF-8 column via `col::CHUNK_TYPE`.
+
+**`ChunkMetadata` gained three fields in Phase 1.** `chunk_type: ChunkType` is always populated. `symbol_name: Option<String>` holds the AST-extracted name (function, struct, trait); `None` for fallback chunks. `parent_scope: Option<String>` holds the enclosing `impl` type name for methods (e.g. `"Counter"` for a method in `impl Counter`); `None` for free functions and structs. Both are nullable columns in LanceDB (`col::SYMBOL_NAME`, `col::PARENT_SCOPE`).
 
 **`Result<T>` alias.** `coderag::Result<T>` expands to `std::result::Result<T, CoderagError>`. Use this alias throughout the library. `main.rs` uses `anyhow::Result` at the top level — anyhow wraps `CoderagError` via blanket `Into`.
 
