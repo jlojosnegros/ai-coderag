@@ -1,10 +1,11 @@
 use std::{
+    collections::HashMap,
     fs::read_to_string,
     path::{Component, Path, PathBuf},
 };
 
 use clap::{Parser, Subcommand};
-use coderag::{ChunkStore, EmbeddingProvider, FastembedProvider, LanceDbStore, LineChunker, ScoredChunk};
+use coderag::{AstChunker, ChunkStore, EmbeddingProvider, FastembedProvider, LanceDbStore, ScoredChunk};
 use tracing::instrument;
 use tracing_subscriber::fmt::format::FmtSpan;
 use walkdir::WalkDir;
@@ -105,7 +106,7 @@ async fn run_index(
 ) -> anyhow::Result<()> {
     let embedder = FastembedProvider::new().await?;
     let store = LanceDbStore::open(&db, embedder.dimension()).await?;
-    let chunker = LineChunker::default();
+    let chunker = AstChunker::default();
 
     let files = collect_files(&path, exclude_mode.as_ref(), &exclude, &include);
 
@@ -140,7 +141,19 @@ async fn run_index(
         let n = chunks.len();
         store.upsert(&chunks).await?;
 
-        tracing::info!(file_path = %&file_path.display(), chunks=n, "File Indexed");
+        let type_summary = {
+            let mut counts: HashMap<&str, usize> = HashMap::new();
+            for chunk in &chunks {
+                *counts.entry(chunk.metadata.chunk_type.as_str()).or_insert(0) += 1;
+            }
+            counts
+                .iter()
+                .map(|(k, v)| format!("{k}:{v}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+
+        tracing::info!(file_path = %&file_path.display(), chunks=n, summary = type_summary,  "File Indexed");
 
         total_files += 1;
         total_chunks += n;
@@ -176,14 +189,23 @@ async fn run_query(text: String, top: usize, db: String) -> anyhow::Result<()> {
 
 fn display_results(results: &[ScoredChunk], writer: &mut impl std::io::Write) -> anyhow::Result<()> {
     for (idx, scored) in results.iter().enumerate() {
+        let meta = &scored.chunk.metadata;
+
         writeln!(writer, "\n--- Result {} (score: {:.3}) ---", idx + 1, scored.score)?;
-        writeln!(
+
+        // File + line range + symbol name on one line, matching phase-02 expected output format
+        write!(
             writer,
             "{} [lines {}-{}]",
-            scored.chunk.metadata.file_path.display(),
-            scored.chunk.metadata.line_start,
-            scored.chunk.metadata.line_end,
+            meta.file_path.display(),
+            meta.line_start,
+            meta.line_end
         )?;
+        if let Some(name) = &meta.symbol_name {
+            write!(writer, "  {} {name}", meta.chunk_type.as_str())?;
+        }
+        writeln!(writer)?;
+
         writeln!(writer, "\n{}", scored.chunk.content)?;
     }
     Ok(())
@@ -214,7 +236,6 @@ fn collect_files(
             }
         })
     };
-
 
     let mut files = Vec::new();
 
