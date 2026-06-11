@@ -21,6 +21,24 @@ pub struct LanceDbStore {
     schema: Arc<Schema>,
 }
 
+mod col {
+    pub const ID: &str = "id";
+    pub const CONTENT: &str = "content";
+    pub const FILE_PATH: &str = "file_path";
+    pub const LINE_START: &str = "line_start";
+    pub const LINE_END: &str = "line_end";
+    pub const LANGUAGE: &str = "language";
+    pub const CHUNK_TYPE: &str = "chunk_type";
+    pub const SYMBOL_NAME: &str = "symbol_name";
+    pub const PARENT_SCOPE: &str = "parent_scope";
+    pub const EMBEDDING: &str = "embedding";
+    pub const EMBEDDING_ITEM: &str = "item";
+    /// Virtual column added by LanceDB to nearest_to() results. Not in the stored schema.
+    pub const DISTANCE: &str = "_distance";
+}
+
+const TABLE_NAME: &str = "chunks";
+
 impl LanceDbStore {
     /// Open ( or create) the LanceDB database at `path`.
     /// `dimension` must match the embedding model's output dimension exactly.
@@ -34,7 +52,7 @@ impl LanceDbStore {
 
         Ok(Self {
             conn,
-            table_name: "chunks".to_string(),
+            table_name: TABLE_NAME.to_string(),
             dimension,
             schema,
         })
@@ -42,17 +60,24 @@ impl LanceDbStore {
 
     fn build_schema(dimension: usize) -> Schema {
         Schema::new(vec![
-            Field::new("id", DataType::Utf8, false),
-            Field::new("content", DataType::Utf8, false),
-            Field::new("file_path", DataType::Utf8, false),
-            Field::new("line_start", DataType::UInt32, false),
-            Field::new("line_end", DataType::UInt32, false),
-            Field::new("language", DataType::Utf8, false),
+            Field::new(col::ID, DataType::Utf8, false),
+            Field::new(col::CONTENT, DataType::Utf8, false),
+            Field::new(col::FILE_PATH, DataType::Utf8, false),
+            Field::new(col::LINE_START, DataType::UInt32, false),
+            Field::new(col::LINE_END, DataType::UInt32, false),
+            Field::new(col::LANGUAGE, DataType::Utf8, false),
+            Field::new(col::CHUNK_TYPE, DataType::Utf8, false),
+            Field::new(col::SYMBOL_NAME, DataType::Utf8, true), // Nullable
+            Field::new(col::PARENT_SCOPE, DataType::Utf8, true), // Nullable
             // FixedSizeList stores all embeddings as a flat continuous array
             // each row is a list of exactly `dimension` floats
+            // embedding column last (LanceDB works better with the vector column last)
             Field::new(
-                "embedding",
-                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), dimension as i32),
+                col::EMBEDDING,
+                DataType::FixedSizeList(
+                    Arc::new(Field::new(col::EMBEDDING_ITEM, DataType::Float32, true)),
+                    dimension as i32,
+                ),
                 false,
             ),
         ])
@@ -99,6 +124,21 @@ impl LanceDbStore {
             .map(|chunk| chunk.metadata.language.as_str())
             .collect::<Vec<_>>();
 
+        let chunk_types = chunks
+            .iter()
+            .map(|chunk| chunk.metadata.chunk_type.as_str())
+            .collect::<Vec<_>>();
+
+        let symbol_names = chunks
+            .iter()
+            .map(|chunk| chunk.metadata.symbol_name.as_deref())
+            .collect::<Vec<_>>();
+
+        let parent_scopes = chunks
+            .iter()
+            .map(|chunk| chunk.metadata.parent_scope.as_deref())
+            .collect::<Vec<_>>();
+
         // Build the embedding column
         // flatten all embeddings into a single Vec<f32>, then wrap in FixedSizeListArray
         let flat_embeddings = chunks
@@ -107,7 +147,7 @@ impl LanceDbStore {
             .collect::<Vec<_>>();
         let values = Arc::new(Float32Array::from(flat_embeddings));
         let embedding_col = Arc::new(FixedSizeListArray::new(
-            Arc::new(Field::new("item", DataType::Float32, true)),
+            Arc::new(Field::new(col::EMBEDDING_ITEM, DataType::Float32, true)),
             self.dimension as i32,
             values,
             None,
@@ -122,6 +162,9 @@ impl LanceDbStore {
                 Arc::new(UInt32Array::from(line_starts)) as Arc<dyn Array>,
                 Arc::new(UInt32Array::from(line_ends)) as Arc<dyn Array>,
                 Arc::new(StringArray::from(languages)) as Arc<dyn Array>,
+                Arc::new(StringArray::from(chunk_types)) as Arc<dyn Array>,
+                Arc::new(StringArray::from(symbol_names)) as Arc<dyn Array>,
+                Arc::new(StringArray::from(parent_scopes)) as Arc<dyn Array>,
                 embedding_col,
             ],
         )
@@ -166,7 +209,7 @@ impl ChunkStore for LanceDbStore {
                 .await
                 .map_err(|err| CoderagError::Store(err.to_string()))?;
 
-            let mut op = table.merge_insert(&["id"]);
+            let mut op = table.merge_insert(&[col::ID]);
             op.when_matched_update_all(None);
             op.when_not_matched_insert_all();
             op.execute(Box::new(RecordBatchIterator::new(vec![Ok(batch)], self.schema.clone())))
@@ -212,42 +255,63 @@ impl ChunkStore for LanceDbStore {
 
         for batch in &batches {
             let ids = batch
-                .column_by_name("id")
+                .column_by_name(col::ID)
                 .unwrap()
                 .as_any()
                 .downcast_ref::<StringArray>()
                 .unwrap();
 
             let contents = batch
-                .column_by_name("content")
+                .column_by_name(col::CONTENT)
                 .unwrap()
                 .as_any()
                 .downcast_ref::<StringArray>()
                 .unwrap();
 
             let file_paths = batch
-                .column_by_name("file_path")
+                .column_by_name(col::FILE_PATH)
                 .unwrap()
                 .as_any()
                 .downcast_ref::<StringArray>()
                 .unwrap();
 
             let line_starts = batch
-                .column_by_name("line_start")
+                .column_by_name(col::LINE_START)
                 .unwrap()
                 .as_any()
                 .downcast_ref::<UInt32Array>()
                 .unwrap();
 
             let line_ends = batch
-                .column_by_name("line_end")
+                .column_by_name(col::LINE_END)
                 .unwrap()
                 .as_any()
                 .downcast_ref::<UInt32Array>()
                 .unwrap();
 
             let languages = batch
-                .column_by_name("language")
+                .column_by_name(col::LANGUAGE)
+                .unwrap()
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+
+            let chunk_types = batch
+                .column_by_name(col::CHUNK_TYPE)
+                .unwrap()
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+
+            let symbol_names = batch
+                .column_by_name(col::SYMBOL_NAME)
+                .unwrap()
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+
+            let parent_scopes = batch
+                .column_by_name(col::PARENT_SCOPE)
                 .unwrap()
                 .as_any()
                 .downcast_ref::<StringArray>()
@@ -255,7 +319,7 @@ impl ChunkStore for LanceDbStore {
 
             // LanceDB appends a "_distance" column to vector search results
             let distances = batch
-                .column_by_name("_distance")
+                .column_by_name(col::DISTANCE)
                 .unwrap()
                 .as_any()
                 .downcast_ref::<Float32Array>()
@@ -281,6 +345,17 @@ impl ChunkStore for LanceDbStore {
                             line_start: line_starts.value(idx),
                             line_end: line_ends.value(idx),
                             language: languages.value(idx).parse().unwrap(),
+                            chunk_type: chunk_types.value(idx).parse().unwrap(),
+                            symbol_name: if symbol_names.is_null(idx) {
+                                None
+                            } else {
+                                Some(symbol_names.value(idx).to_string())
+                            },
+                            parent_scope: if parent_scopes.is_null(idx) {
+                                None
+                            } else {
+                                Some(parent_scopes.value(idx).to_string())
+                            },
                         },
                         embedding: None,
                     },
