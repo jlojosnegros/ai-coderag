@@ -16,7 +16,7 @@ build:
 
 # Static release build for Linux x86-64 (requires cross and Docker)
 build-static:
-    cross build --release --target x86_64-unknown-linux-musl
+    RUSTC_WRAPPER="" cross build --release --target x86_64-unknown-linux-musl
 
 # Run unit tests only
 test-unit:
