@@ -2,7 +2,7 @@
 
 > Semantic code search powered by local embeddings — no API keys, no servers, no cloud.
 
-**Status:** Phase 0 MVP — v0.2.0 | **Language:** Rust 1.85+ (edition 2024) | **Embedding model:** JinaEmbeddingsV2BaseCode (768-dim, local ONNX)
+**Status:** Phase 0 MVP — v0.3.0 | **Language:** Rust 1.85+ (edition 2024) | **Embedding model:** JinaEmbeddingsV2BaseCode (768-dim, local ONNX)
 
 ---
 
@@ -145,4 +145,4 @@ MIT
 
 ---
 
-_coderag v0.2.0 — Rust 1.85+ (edition 2024) / fastembed 5.x / lancedb 0.30_
+_coderag v0.3.0 — Rust 1.85+ (edition 2024) / fastembed 5.x / lancedb 0.30_
