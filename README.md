@@ -11,14 +11,14 @@ coderag indexes your Rust and C++ source code into a local vector database and l
 ```
 $ coderag index ./src --exclude-mode git-ignore
 [INFO] Model loaded. Embedding dimension: 768
-[INFO] Indexed src/server.rs (4 chunks)
-[INFO] Indexed src/handler.rs (6 chunks)
+[INFO] Indexed src/server.rs (4 chunks [function:3, struct:1])
+[INFO] Indexed src/handler.rs (6 chunks [function:5, impl:1])
 [INFO] Done. Indexed 12 files, 38 chunks.
 
 $ coderag query "how are HTTP connections pooled"
 
 --- Result 1 (score: 0.871) ---
-src/connection_pool.rs [lines 14-54]
+src/connection_pool.rs [lines 14-54]  struct ConnectionPool
 
 pub struct ConnectionPool {
     max_size: usize,
@@ -36,11 +36,11 @@ pub struct ConnectionPool {
 
 ## Prerequisites
 
-| Requirement | Notes |
-|---|---|
-| Rust 1.85+ (edition 2024) | `rustup update stable` |
-| ~600 MB disk (first run) | Model downloads to `~/.cache/fastembed/` on first `index` |
-| ~1 GB RAM | Model is held in memory while running |
+| Requirement               | Notes                                                     |
+| ------------------------- | --------------------------------------------------------- |
+| Rust 1.85+ (edition 2024) | `rustup update stable`                                    |
+| ~600 MB disk (first run)  | Model downloads to `~/.cache/fastembed/` on first `index` |
+| ~1 GB RAM                 | Model is held in memory while running                     |
 
 No API keys. No Docker. No database server.
 
@@ -114,7 +114,7 @@ Commands:
 
 ## How it works
 
-1. **Chunking** — source files are split into overlapping windows of ~40 lines
+1. **Chunking** — source files are parsed into semantic units (functions, methods, structs, traits, classes) using tree-sitter; line-based chunking is used as fallback for unknown file types or parse failures
 2. **Embedding** — each chunk is converted to a 768-dimensional vector using `JinaEmbeddingsV2BaseCode` (a model trained specifically on source code)
 3. **Storage** — vectors and metadata are stored in a [LanceDB](https://lancedb.com) embedded database (a directory of `.lance` files)
 4. **Search** — a query is embedded with the same model, and the nearest vectors are retrieved using approximate nearest-neighbor search
@@ -132,7 +132,7 @@ RUST_LOG=warn  coderag index ./src    # quiet: only warnings and errors
 
 ## Roadmap
 
-- [ ] AST-aware chunking via tree-sitter (functions, structs, traits as chunk boundaries)
+- [x] AST-aware chunking via tree-sitter (functions, structs, traits as chunk boundaries)
 - [ ] Call graph enrichment via rust-analyzer / clangd (LSP)
 - [ ] MCP server for Claude Code integration
 - [ ] Incremental indexing (skip unchanged files by content hash)
