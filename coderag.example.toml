@@ -1,0 +1,39 @@
+[project]
+# Root folder to determine LSP's root_uri
+# default: the nearest ancestor directory (starting from the indexed path
+# and walking upwards) that contains a Cargo.toml.
+#
+# Example: if you index "/home/user/myproject/crates/core/src" and
+# "/home/user/myproject/Cargo.toml" exists, root defaults to
+# "/home/user/myproject".
+# root = "/path/to/project"
+
+[indexer]
+exclude_patterns = ["**/target/**", "**/.git/**", "**/vendor/**"]
+
+[lsp]
+# enable LSP enrichment while indexing
+# default : false
+enabled = true
+
+# path to rust-analyzer binary
+# default: "rust-analyzer" (in PATH)
+rust_analyzer_path = "rust-analyzer"
+
+# Timeout (in secs ) for each LSP request
+# note: rust-analyzer may take some time in large projects
+# default: 30s
+timeout_secs = 30
+
+# Path prefix used to filter out external callers.
+# Only callers whose file URI starts with this prefix are kept in the index;
+# this excludes results coming from the Rust standard library or from
+# external crates (e.g. dependencies under ~/.cargo/registry).
+# Default: the project's own path, auto-detected (same as the resolved
+# `root`, or the indexed directory).
+# project_path_filter = "/home/user/source/myproject"
+
+[store]
+# Folder to store LanceDB index
+# default ".coderag"
+path = ".coderag"
