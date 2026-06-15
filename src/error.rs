@@ -8,6 +8,9 @@ pub enum CoderagError {
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("LSP error: {0}")]
+    Lsp(String),
 }
 
 /// Convinient alias for Result

@@ -97,7 +97,7 @@ impl CoderagConfig {
             Ok(content) => content,
             Err(err) => {
                 tracing::warn!(file_path = %&path.display(),
-                    error = %err.to_string(), 
+                    error = %err.to_string(),
                     "Cannot read config file. Use defaults (lsp disabled) ");
                 return Self::default();
             },
