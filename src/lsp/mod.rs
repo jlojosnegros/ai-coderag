@@ -26,7 +26,6 @@ pub struct LspClient {
     stdout: BufReader<ChildStdout>,
     next_id: AtomicU64,
     timeout_secs: u64,
-    root_uri: String,
     path_filter: String,
 }
 
@@ -62,7 +61,6 @@ impl LspClient {
             stdout,
             next_id: AtomicU64::new(0),
             timeout_secs,
-            root_uri: root_uri.clone(),
             path_filter,
         };
 
