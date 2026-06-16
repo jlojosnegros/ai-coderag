@@ -11,7 +11,7 @@ pub mod traits;
 pub use chunker::LineChunker;
 pub use config::CoderagConfig;
 pub use domain::{Chunk, ChunkId, ChunkMetadata, ChunkType, Language, ScoredChunk};
-pub use embed::FastembedProvider;
+pub use embed::CandleProvider;
 pub use error::{CoderagError, Result};
 pub use lsp::LspClient;
 pub use parser::AstChunker;

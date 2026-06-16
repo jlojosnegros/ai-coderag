@@ -5,7 +5,7 @@ use std::{
 };
 
 use clap::{Parser, Subcommand};
-use coderag::{AstChunker, ChunkStore, EmbeddingProvider, FastembedProvider, LanceDbStore, ScoredChunk};
+use coderag::{AstChunker, CandleProvider, ChunkStore, EmbeddingProvider, LanceDbStore, ScoredChunk};
 use tracing::instrument;
 use tracing_subscriber::fmt::format::FmtSpan;
 use walkdir::WalkDir;
@@ -104,7 +104,7 @@ async fn run_index(
     exclude: Vec<String>,
     include: Vec<String>,
 ) -> anyhow::Result<()> {
-    let embedder = FastembedProvider::new().await?;
+    let embedder = CandleProvider::new().await?;
     let store = LanceDbStore::open(&db, embedder.dimension()).await?;
     let chunker = AstChunker::default();
 
@@ -170,7 +170,7 @@ async fn run_index(
 
 #[instrument(name = "query")]
 async fn run_query(text: String, top: usize, db: String) -> anyhow::Result<()> {
-    let embedder = FastembedProvider::new().await?;
+    let embedder = CandleProvider::new().await?;
     let store = LanceDbStore::open(&db, embedder.dimension()).await?;
 
     let embeddings = embedder.embed(&[text.as_str()]).await?;

@@ -1,7 +1,7 @@
 use std::{fs::read_to_string, path::Path};
 
 use coderag::{
-    ChunkStore, ChunkType, EmbeddingProvider, FastembedProvider, LanceDbStore, LineChunker, parser::AstChunker,
+    CandleProvider, ChunkStore, ChunkType, EmbeddingProvider, LanceDbStore, LineChunker, parser::AstChunker,
 };
 use tempfile::TempDir;
 
@@ -9,13 +9,12 @@ use tempfile::TempDir;
 /// Uses a temporary directory for the LanceDB database (cleaned up after the test)
 ///
 /// Run with: cargo test -- --test-threads=1
-/// (fastembed downloads the model on first run, parallel tests can interfere)
 #[tokio::test]
 async fn index_and_query_returns_relevant_results() {
     let tmp = TempDir::new().expect("failed to create tmp dir");
     let db_path = tmp.path().to_str().unwrap().to_string();
 
-    let embedder = FastembedProvider::new().await.expect("failed to load embedding model");
+    let embedder = CandleProvider::new().await.expect("failed to load embedding model");
 
     let store = LanceDbStore::open(&db_path, embedder.dimension())
         .await
@@ -85,7 +84,7 @@ async fn rust_chunks_have_correct_types_and_symbols() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().to_str().unwrap().to_string();
 
-    let embedder = FastembedProvider::new().await.unwrap();
+    let embedder = CandleProvider::new().await.unwrap();
     let store = LanceDbStore::open(&db_path, embedder.dimension()).await.unwrap();
     let chunker = AstChunker::new();
 
@@ -133,7 +132,7 @@ async fn query_returns_relevant_results_after_ast_indexing() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().to_str().unwrap().to_string();
 
-    let embedder = FastembedProvider::new().await.unwrap();
+    let embedder = CandleProvider::new().await.unwrap();
     let store = LanceDbStore::open(&db_path, embedder.dimension()).await.unwrap();
     let chunker = AstChunker::new();
 
