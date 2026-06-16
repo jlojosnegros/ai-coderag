@@ -236,7 +236,7 @@ impl LspClient {
     /// Open a document in the server
     /// required before any textDocument request
     async fn open_document(&mut self, file_path: &Path, language_id: &str) -> Result<String> {
-        let content = read_to_string(file_path).map_err(|err| CoderagError::Io(err))?;
+        let content = read_to_string(file_path).map_err(CoderagError::Io)?;
         let uri = path_to_file_uri(file_path)?;
 
         self.notify(
@@ -421,7 +421,7 @@ fn path_to_file_uri(path: &Path) -> Result<String> {
     let abs = if path.is_absolute() {
         path.to_path_buf()
     } else {
-        std::env::current_dir().map_err(|err| CoderagError::Io(err))?.join(path)
+        std::env::current_dir().map_err(CoderagError::Io)?.join(path)
     };
 
     Url::from_file_path(&abs)

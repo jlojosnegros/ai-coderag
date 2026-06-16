@@ -29,9 +29,10 @@ test-integration:
 # Run all tests — unit + HTTP integration
 test: test-unit test-integration
 
-# Apply compiler-suggested fixes automatically
+# Apply compiler-suggested fixes automatically (rustc + clippy)
 fix:
     cargo fix --allow-dirty --allow-staged
+    cargo clippy --fix --allow-dirty --allow-staged
 
 # Check formatting and clippy (nightly needed for unstable rustfmt options)
 check:
