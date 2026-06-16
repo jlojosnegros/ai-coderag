@@ -13,7 +13,7 @@ pub use config::CoderagConfig;
 pub use domain::{Chunk, ChunkId, ChunkMetadata, ChunkType, Language, ScoredChunk};
 pub use embed::FastembedProvider;
 pub use error::{CoderagError, Result};
+pub use lsp::LspClient;
 pub use parser::AstChunker;
 pub use store::LanceDbStore;
 pub use traits::{ChunkStore, EmbeddingProvider};
-pub use lsp::LspClient;

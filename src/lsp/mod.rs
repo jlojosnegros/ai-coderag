@@ -5,6 +5,7 @@ use std::{
     time::Duration,
 };
 
+use lsp_types::{DocumentSymbol as LspDocSymbol, Location as LspLocation, SymbolKind as LspSymbolKind};
 use serde_json::{Value, json};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
@@ -202,7 +203,12 @@ impl LspClient {
                     "capabilities": {
                         "textDocument": {
                             "documentSymbol" : {
-                                "hierarchicalDocumentSymbolSupport": false
+                                // true means server return DocumentSymbol[] with selectionRange
+                                // and children.
+                                // false means server returns SymbolInformation[] without
+                                // selectionRange, which is not enough for references_at
+                                // positioning
+                                "hierarchicalDocumentSymbolSupport": true
                             },
                             "references": {}
                         }
@@ -284,7 +290,7 @@ impl LspClient {
 
         let _ = self.close_document(&uri).await;
 
-        parse_document_symbols(&result)
+        parse_document_symbols(result)
     }
 
     pub async fn references_at(&mut self, file_path: &Path, line: u32, character: u32) -> Result<Vec<String>> {
@@ -306,32 +312,29 @@ impl LspClient {
 
         let _ = self.close_document(&uri).await;
 
-        // result is an array of Location objects [{"uri": ..., "range": {...}}, ...]
-        let locations = match result.as_array() {
-            Some(a) => a,
-            None => return Ok(Vec::new()),
-        };
-
+        let locations: Vec<LspLocation> = serde_json::from_value(result).unwrap_or_default();
         let mut callers = Vec::new();
         for loc in locations {
-            let ref_uri = loc.get("uri").and_then(Value::as_str).unwrap_or("");
+            // filter out references from external crates
+            // lsp_types::Uri has no to_file_path(), parse as url::Url first.
+            let url = match Url::parse(loc.uri.as_str()) {
+                Ok(u) => u,
+                Err(e) => {
+                    tracing::warn!("references_at: skipping malformed URI '{}': {e}", loc.uri.as_str());
+                    continue;
+                },
+            };
 
-            // Filter out references from external crates
-            if !ref_uri.contains(&self.path_filter) {
+            if !url.path().contains(self.path_filter.as_str()) {
                 continue;
             }
-
-            // Extract the file path from the URI for display
-            if let Ok(url) = Url::parse(ref_uri) {
-                if let Ok(ref_path) = url.to_file_path() {
-                    let line_num = loc.pointer("/range/start/line").and_then(Value::as_u64).unwrap_or(0);
-                    let display = format!(
-                        "{}:{}",
-                        ref_path.file_name().unwrap_or_default().to_string_lossy(),
-                        line_num + 1
-                    );
-                    callers.push(display);
-                }
+            if let Ok(ref_path) = url.to_file_path() {
+                let display = format!(
+                    "{}:{}",
+                    ref_path.file_name().unwrap_or_default().to_string_lossy(),
+                    loc.range.start.line + 1
+                );
+                callers.push(display);
             }
         }
         Ok(callers)
@@ -365,58 +368,53 @@ pub enum SymbolKind {
     Other,
 }
 impl SymbolKind {
-    fn from_lsp_kind(kind: u64) -> Self {
-        match kind {
-            12 => Self::Function,
-            6 => Self::Method,
-            23 => Self::Struct,
-            10 => Self::Enum,
-            11 => Self::Interface,
-            _ => Self::Other,
+    fn from_lsp_kind(kind: LspSymbolKind) -> Self {
+        // LspSymbolKind is a newtype struct (not a Rust enum) because the LSP spec
+        // allows servers to define extension values. Pattern matching on struct
+        // constants is not supported, so we use if/else with associated constants.
+        if kind == LspSymbolKind::FUNCTION {
+            Self::Function
+        } else if kind == LspSymbolKind::METHOD {
+            Self::Method
+        } else if kind == LspSymbolKind::STRUCT {
+            Self::Struct
+        } else if kind == LspSymbolKind::ENUM {
+            Self::Enum
+        } else if kind == LspSymbolKind::INTERFACE {
+            Self::Interface
+        } else {
+            Self::Other
         }
     }
 }
 
 // --- Helpers ---
 
-fn parse_document_symbols(result: &Value) -> Result<Vec<DocumentSymbol>> {
-    let symbols = match result.as_array() {
-        Some(a) => a,
-        None => return Ok(Vec::new()),
-    };
-
+fn parse_document_symbols(result: Value) -> Result<Vec<DocumentSymbol>> {
+    let raw: Vec<LspDocSymbol> = serde_json::from_value(result)
+        .map_err(|err| CoderagError::Lsp(format!("failed to parse documentSymbol response: {err}")))?;
     let mut out = Vec::new();
+    flatten_symbols(raw, &mut out);
+    Ok(out)
+}
 
+/// Recursively flattens the hierarchical DocumentSymbol tree into a flat list.
+/// With hierarchicalDocumentSymbolSupport: true, rust-analyzer nest methods under
+/// their parent struct/impl block. This collects all symbols depth-first so that
+/// callers can iterate a simple Vec without caring about nesting
+fn flatten_symbols(symbols: Vec<LspDocSymbol>, out: &mut Vec<DocumentSymbol>) {
     for sym in symbols {
-        let name = sym.get("name").and_then(Value::as_str).unwrap_or("").to_string();
-        let kind = sym
-            .get("kind")
-            .and_then(Value::as_u64)
-            .map(SymbolKind::from_lsp_kind)
-            .unwrap_or(SymbolKind::Other);
-
-        // "selectionRange" points to just the name token, not the full definition.
-        // This is the position to use for "go to definition" and "find references"
-
-        let selection_start_line = sym
-            .pointer("/selectionRange/start/line")
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as u32;
-        let selection_start_char = sym
-            .pointer("/selectionRange/start/character")
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as u32;
-
-        if !name.is_empty() {
+        let children = sym.children.unwrap_or_default();
+        if !sym.name.is_empty() {
             out.push(DocumentSymbol {
-                name,
-                kind,
-                selection_start_line,
-                selection_start_char,
+                name: sym.name,
+                kind: SymbolKind::from_lsp_kind(sym.kind),
+                selection_start_line: sym.selection_range.start.line,
+                selection_start_char: sym.selection_range.start.character,
             });
         }
+        flatten_symbols(children, out);
     }
-    Ok(out)
 }
 
 fn path_to_file_uri(path: &Path) -> Result<String> {
