@@ -1,3 +1,5 @@
+mod jina_model;
+
 use std::{fs::read_to_string, sync::Arc};
 
 use async_trait::async_trait;
