@@ -59,6 +59,14 @@ async fn index_and_query_returns_relevant_results() {
         io_results[0].chunk.metadata.file_path.display()
     );
 
+    if io_results.len() > 1 {
+    assert!(
+        io_results[0].score > io_results[1].score,
+        "top result ({:.3}) must beat second ({:.3}) for io query",
+        io_results[0].score, io_results[1].score
+    );
+}
+
     // Query for configuration — should return results from config.rs.
     let config_query = embedder
         .embed(&["load configuration from environment variables"])
@@ -77,6 +85,13 @@ async fn index_and_query_returns_relevant_results() {
         "top result for config query should come from config.rs, got {}",
         config_results[0].chunk.metadata.file_path.display()
     );
+    if config_results.len() > 1 {
+    assert!(
+        config_results[0].score > config_results[1].score,
+        "top result ({:.3}) must beat second ({:.3}) for config query",
+        config_results[0].score, config_results[1].score
+    );
+}
 }
 
 #[tokio::test]
