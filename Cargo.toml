@@ -4,6 +4,11 @@ version = "0.3.0"
 edition = "2024"
 license = "MIT"
 
+[profile.release]
+opt-level = 3 #it is default, just being explicit.
+lto = "thin"  #link time optimization inlining between crates
+codegen-units = 1 # slower builds but more context for optimization
+
 [dependencies]
 anyhow = "1.0.102"
 arrow-array = "58.3.0"
