@@ -1,6 +1,8 @@
 [build]
-rustflags = ["-C", "target-cpu=native"]  #use all instruccions available in the CPU
 rustdocflags = ["-D", "warnings"]
 rustc-wrapper = "sccache"
 # sccache is incompatible with incremental compilation
 incremental = false
+
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-cpu=native"]
