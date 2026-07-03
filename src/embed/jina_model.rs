@@ -22,7 +22,7 @@ struct BertEmbeddings {
 impl BertEmbeddings {
     fn new(vb: VarBuilder, cfg: &Config) -> Result<Self> {
         let word_embeddings = embedding(cfg.vocab_size, cfg.hidden_size, vb.pp("word_embeddings"))?;
-        let token_type_embeddings = embedding(cfg.vocab_size, cfg.hidden_size, vb.pp("token_type_embeddings"))?;
+        let token_type_embeddings = embedding(cfg.type_vocab_size, cfg.hidden_size, vb.pp("token_type_embeddings"))?;
         let layer_norm = layer_norm(cfg.hidden_size, cfg.layer_norm_eps, vb.pp("LayerNorm"))?;
         Ok(Self {
             word_embeddings,
@@ -340,8 +340,19 @@ fn build_alibi_slopes(cfg: &Config) -> Result<Tensor> {
         .map(|v| -1f32 / 2f32.powf((v * 8) as f32 / n2 as f32))
         .collect::<Vec<_>>();
 
-    // If num_heads is not a power of 2, interleave odd-indexed then even-indexed slopes
-    // to distribute the geometric range evenly (matches the reference implementation).
+    // When n_heads is not a power of 2 (e.g., 12), the formula produces n2=16 slopes
+    // sorted from steepest (-0.707) to flattest (-0.0039).
+    // Taking the first n_heads=12 from that sorted sequence would skip the 4 flattest
+    // slopes — the heads responsible for long-range attention would be absent.
+    //
+    // skip(1).step_by(2) selects v=2,4,6,...,n2  → the flatter half of the range
+    //                                               (ends with the flattest slope -0.0039)
+    // step_by(2)         selects v=1,3,5,...,n2-1 → the steeper half of the range
+    //                                               (starts with the steepest slope -0.707)
+    //
+    // Placing the flatter half first and then take(n_heads) guarantees that the flat end
+    // of the range is always fully represented. The remaining slots are filled from the
+    // steep end. Result: n_heads slopes covering both short-range and long-range attention.
     let slopes = if n2 == n_heads {
         slopes
     } else {
@@ -350,6 +361,7 @@ fn build_alibi_slopes(cfg: &Config) -> Result<Tensor> {
             .skip(1)
             .step_by(2)
             .chain(slopes.iter().step_by(2))
+            .take(n_heads)
             .copied()
             .collect()
     };
@@ -449,7 +461,7 @@ impl Module for JinaBertEncoder {
 /// device is pub so mod.rs can create input_ids tensors on the same device
 /// without duplicating the device resolution logic
 pub struct JinaBertModel {
-    ///converts token IDs to initial float vectors
+    /// converts token IDs to initial float vectors
     embeddings: BertEmbeddings,
     /// 12 layers of attention + FFN (Feed Forward Network)
     encoder: JinaBertEncoder,

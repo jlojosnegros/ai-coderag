@@ -5,11 +5,11 @@ use std::{fs::read_to_string, sync::Arc};
 use async_trait::async_trait;
 use candle_core::{DType, Device, Tensor};
 use candle_nn::{Module, VarBuilder};
-use candle_transformers::models::jina_bert::{BertModel, Config};
+use candle_transformers::models::jina_bert::Config;
 use hf_hub::{Repo, RepoType, api::sync::Api};
 use tokenizers::Tokenizer;
 
-use crate::{CoderagError, EmbeddingProvider, Result};
+use crate::{CoderagError, EmbeddingProvider, Result, embed::jina_model::JinaBertModel};
 
 /// Embedding provider backed by Candle and the Jina v2 code model.
 ///
@@ -19,9 +19,9 @@ use crate::{CoderagError, EmbeddingProvider, Result};
 pub struct CandleProvider {
     /// BerModel is Send + Sync (candle tensors are Arc<Storage> internally)
     /// so Arc alone is enough (no Mutex needed)
-    model: Arc<BertModel>,
+    model: Arc<JinaBertModel>,
     tokenizer: Arc<Tokenizer>,
-    device: Device,
+    _device: Device,
     dimension: usize,
     model_id: String,
 }
@@ -72,14 +72,14 @@ impl CandleProvider {
             };
 
             let model =
-                BertModel::new(vb, &config).map_err(|err| CoderagError::Embedding(format!("model init: {err}")))?;
+                JinaBertModel::new(vb, &config).map_err(|err| CoderagError::Embedding(format!("model init: {err}")))?;
 
             tracing::info!(embedding_dimension = dimension, "Model loaded");
 
             Ok(CandleProvider {
                 model: Arc::new(model),
                 tokenizer: Arc::new(tokenizer),
-                device,
+                _device: device,
                 dimension,
                 model_id: repo_id,
             })
@@ -105,20 +105,18 @@ impl EmbeddingProvider for CandleProvider {
     async fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
         let model = Arc::clone(&self.model);
         let tokenizer = Arc::clone(&self.tokenizer);
-        let device = self.device.clone();
         let texts = texts.iter().map(|s| s.to_string()).collect::<Vec<_>>();
 
         // Inference is synchronous and CPU bound: keep off the async thread pool
         let mut embeddings = tokio::task::spawn_blocking(move || {
             texts
                 .iter()
-                .map(|text| embed_single(&model, &tokenizer, &device, text))
+                .map(|text| embed_single(&model, &tokenizer, &model.device, text))
                 .collect::<candle_core::Result<Vec<Vec<f32>>>>()
                 .map_err(|err| CoderagError::Embedding(err.to_string()))
         })
         .await
         .map_err(|err| CoderagError::Embedding(format!("spawn_blocking join: {err}")))??;
-
 
         for v in &mut embeddings {
             Self::normalize(v);
@@ -141,7 +139,7 @@ impl EmbeddingProvider for CandleProvider {
 /// Pipeline: text -> token Ids -> BERT forward pass -> mean pool -> raw vector
 /// Normalization to unit norm happens in the caller
 fn embed_single(
-    model: &BertModel,
+    model: &JinaBertModel,
     tokenizer: &Tokenizer,
     device: &Device,
     text: &str,
