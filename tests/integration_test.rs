@@ -5,6 +5,28 @@ use coderag::{
 };
 use tempfile::TempDir;
 
+macro_rules! assert_has_symbol {
+    ($symbols:expr, $name:expr) => {
+        assert!(
+            $symbols.iter().any(|s| s.name == $name),
+            "Should find {} symbol",
+            $name
+        );
+    };
+}
+
+macro_rules! assert_has_symbols {
+    ($symbols:expr, $($name:expr),+ $(,)?) => {
+        $(
+            assert!(
+                $symbols.iter().any(|s| s.name == $name),
+                "Should find {} symbol", $name
+            );
+        )+
+    };
+}
+
+
 /// Full pipeline test: index the mini-rust fixture, query it, verify results.
 /// Uses a temporary directory for the LanceDB database (cleaned up after the test)
 ///
@@ -173,4 +195,41 @@ async fn query_returns_relevant_results_after_ast_indexing() {
         io_results[0].chunk.metadata.file_path.to_str().unwrap().contains("io"),
         "Top result for file I/O query should come from io.rs"
     );
+}
+
+/// Integration test that requires rust-analyzer to be installed
+/// Skips gracefully if not found.
+#[tokio::test]
+async fn lsp_enriches_chunks_with_callers() {
+    // Check if rust-analyzer is available
+    if std::process::Command::new("rust-analyzer")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("SKIP: rust-analizyer not found in PATH");
+        return;
+    }
+
+    use coderag::lsp::LspClient;
+
+    let fixture_root = std::path::Path::new("tests/fixtures/mini-rust");
+    let fixture_src = fixture_root.join("src/processor.rs");
+
+    let mut client = LspClient::new_rust_analyzer("rust-analyzer", fixture_root, 60)
+        .await
+        .expect("failed to initialize LSP client");
+
+    // Give rust-analyzer time to index the mini project
+    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+    let symbols = client
+        .document_symbols(&fixture_src)
+        .await
+        .expect("document_symbols failed");
+
+    // the fixture has filter_items, transform_items, count_by_prefix and Item
+    assert!(symbols.len() >= 3, "Expected at least 3 symbols, got {}", symbols.len());
+
+    assert_has_symbols!(symbols, "filter_items", "transform_items", "count_by_prefix");
 }

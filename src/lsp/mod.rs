@@ -273,24 +273,32 @@ impl LspClient {
     pub async fn document_symbols(&mut self, file_path: &Path) -> Result<Vec<DocumentSymbol>> {
         let uri = self.open_document(file_path, "rust").await?;
 
-        // give rust-analyzer a moment to parse the file.
-        // whitout this it may return an empty result for the first request
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        let mut symbols = Vec::new();
+        // TODO This number of retries should be configurable
+        for attempt in 0..5 {
+            let delay = Duration::from_millis(200 * (attempt + 1));
+            // give rust-analyzer a moment to parse the file.
+            // whitout this it may return an empty result for the first request
+            tokio::time::sleep(delay).await;
 
-        let result = self
-            .request(
-                "textDocument/documentSymbol",
-                json!({
-                    "textDocument" : {
-                        "uri" : uri
-                    }
-                }),
-            )
-            .await?;
-
+            let result = self
+                .request(
+                    "textDocument/documentSymbol",
+                    json!({
+                        "textDocument" : {
+                            "uri" : uri
+                        }
+                    }),
+                )
+                .await?;
+            symbols = parse_document_symbols(result)?;
+            if !symbols.is_empty() {
+                break;
+            }
+            tracing::debug!("documentSymbol attemt {} empty, retrying", attempt + 1);
+        }
         let _ = self.close_document(&uri).await;
-
-        parse_document_symbols(result)
+        Ok(symbols)
     }
 
     pub async fn references_at(&mut self, file_path: &Path, line: u32, character: u32) -> Result<Vec<String>> {
@@ -391,6 +399,13 @@ impl SymbolKind {
 // --- Helpers ---
 
 fn parse_document_symbols(result: Value) -> Result<Vec<DocumentSymbol>> {
+    // from: LSP Specification 3.17 - textDocument/documentSymbol
+    //       result: DocumentSymbol[] | SymbolInformation[] | null
+    // that means that result can be "null" if the LSP haven't parsed
+    // the document yet, so we must check it
+    if result.is_null() {
+        return Ok(Vec::new());
+    }
     let raw: Vec<LspDocSymbol> = serde_json::from_value(result)
         .map_err(|err| CoderagError::Lsp(format!("failed to parse documentSymbol response: {err}")))?;
     let mut out = Vec::new();
