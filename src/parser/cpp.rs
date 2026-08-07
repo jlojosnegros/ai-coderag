@@ -92,6 +92,7 @@ fn extract_cpp_function(node: &tree_sitter::Node<'_>, source_bytes: &[u8], path:
             chunk_type: ChunkType::Function,
             symbol_name,
             parent_scope: None,
+            callers: Vec::new(),
         },
         embedding: None,
     })
@@ -106,7 +107,7 @@ fn extract_cpp_function(node: &tree_sitter::Node<'_>, source_bytes: &[u8], path:
 ///
 /// We walk until we find an identifier or give up.
 fn extract_cpp_function_name(node: &tree_sitter::Node<'_>, source_bytes: &[u8]) -> Option<String> {
-    let declarator = node.child_by_field_name(field::DECLARATOR)?;
+    let declarator: tree_sitter::Node<'_> = node.child_by_field_name(field::DECLARATOR)?;
 
     // Walk down the declarator chain until we reach the terminal node that holds the name.
     // C++ allows arbitrarily nested declarator forms, e.g.:
@@ -163,6 +164,7 @@ fn extract_cpp_class(node: &tree_sitter::Node<'_>, source_bytes: &[u8], path: &P
             chunk_type: ChunkType::Struct,
             symbol_name,
             parent_scope: None,
+            callers: Vec::new(),
         },
         embedding: None,
     })

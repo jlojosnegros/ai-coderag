@@ -138,6 +138,7 @@ fn extract_named_node(
             chunk_type,
             symbol_name,
             parent_scope,
+            callers: Vec::new(),
         },
         embedding: None,
     })

@@ -111,6 +111,9 @@ pub struct ChunkMetadata {
     pub symbol_name: Option<String>,
     /// Enclosing scope for methods: type name of the impl block
     pub parent_scope: Option<String>,
+    /// Names of the functions/methods that call this symbol, as found by LSP.
+    /// Emtpy when LSP is disabled or when callers were not found.
+    pub callers : Vec<String>,
 }
 
 /// Fundamental unit of storage and retrieval.

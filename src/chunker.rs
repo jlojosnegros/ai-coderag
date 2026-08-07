@@ -57,6 +57,7 @@ impl LineChunker {
                         chunk_type: ChunkType::FallbackLines,
                         symbol_name: None,
                         parent_scope: None,
+                        callers: Vec::new(),
                     },
                     embedding: None,
                 });

@@ -35,6 +35,7 @@ mod col {
     pub const EMBEDDING_ITEM: &str = "item";
     /// Virtual column added by LanceDB to nearest_to() results. Not in the stored schema.
     pub const DISTANCE: &str = "_distance";
+    pub const CALLERS_JSON: &str = "callers_json";
 }
 
 const TABLE_NAME: &str = "chunks";
@@ -80,6 +81,8 @@ impl LanceDbStore {
                 ),
                 false,
             ),
+            // Callers stored as a JSON array string: ["file.rs:12", "other.rs:45"] or "[]"
+            Field::new(col::CALLERS_JSON, DataType::Utf8, false),
         ])
     }
 
@@ -152,6 +155,21 @@ impl LanceDbStore {
             values,
             None,
         )) as Arc<dyn Array>;
+        let serialized : Vec<String>;
+        let callers_json = {
+            // Serialize each chunk's callers as JSON array string.
+            // Keep the serialized strings alive for the duration of this function
+            serialized = chunks
+                .iter()
+                .map(|c| serde_json::to_string(&c.metadata.callers).unwrap_or_else(|_| "[]".to_string()))
+                .collect::<Vec<_>>();
+
+            // need to collect references to String, so we can NOT do this in one step.
+            // Use a temporary Vec<String> and collect &str from it.
+            // Note: this requires the serialized Vec to outlive this borrow.
+            // The borrow checker will enforce this -> keep serialized in scope
+            serialized.iter().map(|s| s.as_str()).collect::<Vec<_>>()
+        };
 
         RecordBatch::try_new(
             self.schema.clone(),
@@ -165,6 +183,7 @@ impl LanceDbStore {
                 Arc::new(StringArray::from(chunk_types)) as Arc<dyn Array>,
                 Arc::new(StringArray::from(symbol_names)) as Arc<dyn Array>,
                 Arc::new(StringArray::from(parent_scopes)) as Arc<dyn Array>,
+                Arc::new(StringArray::from(callers_json)) as Arc<dyn Array>,
                 embedding_col,
             ],
         )
@@ -325,6 +344,13 @@ impl ChunkStore for LanceDbStore {
                 .downcast_ref::<Float32Array>()
                 .unwrap();
 
+            let callers_json = batch
+                .column_by_name(col::CALLERS_JSON)
+                .unwrap()
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+
             for idx in 0..batch.num_rows() {
                 let l2_distance = distances.value(idx);
                 // Convert L2 distance to cosine similarity score.
@@ -356,6 +382,7 @@ impl ChunkStore for LanceDbStore {
                             } else {
                                 Some(parent_scopes.value(idx).to_string())
                             },
+                            callers: serde_json::from_str(callers_json.value(idx)).unwrap_or_default(),
                         },
                         embedding: None,
                     },
