@@ -60,12 +60,13 @@ async fn index_and_query_returns_relevant_results() {
     );
 
     if io_results.len() > 1 {
-    assert!(
-        io_results[0].score > io_results[1].score,
-        "top result ({:.3}) must beat second ({:.3}) for io query",
-        io_results[0].score, io_results[1].score
-    );
-}
+        assert!(
+            io_results[0].score > io_results[1].score,
+            "top result ({:.3}) must beat second ({:.3}) for io query",
+            io_results[0].score,
+            io_results[1].score
+        );
+    }
 
     // Query for configuration — should return results from config.rs.
     let config_query = embedder
@@ -86,12 +87,13 @@ async fn index_and_query_returns_relevant_results() {
         config_results[0].chunk.metadata.file_path.display()
     );
     if config_results.len() > 1 {
-    assert!(
-        config_results[0].score > config_results[1].score,
-        "top result ({:.3}) must beat second ({:.3}) for config query",
-        config_results[0].score, config_results[1].score
-    );
-}
+        assert!(
+            config_results[0].score > config_results[1].score,
+            "top result ({:.3}) must beat second ({:.3}) for config query",
+            config_results[0].score,
+            config_results[1].score
+        );
+    }
 }
 
 #[tokio::test]

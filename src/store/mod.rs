@@ -60,6 +60,8 @@ impl LanceDbStore {
     }
 
     fn build_schema(dimension: usize) -> Schema {
+        // WARNING! This order MUST HAVE TO BE THE SAME as the one in `to_record_batch`
+        // otherwise this will fail
         Schema::new(vec![
             Field::new(col::ID, DataType::Utf8, false),
             Field::new(col::CONTENT, DataType::Utf8, false),
@@ -70,6 +72,7 @@ impl LanceDbStore {
             Field::new(col::CHUNK_TYPE, DataType::Utf8, false),
             Field::new(col::SYMBOL_NAME, DataType::Utf8, true), // Nullable
             Field::new(col::PARENT_SCOPE, DataType::Utf8, true), // Nullable
+            Field::new(col::CALLERS_JSON, DataType::Utf8, false),
             // FixedSizeList stores all embeddings as a flat continuous array
             // each row is a list of exactly `dimension` floats
             // embedding column last (LanceDB works better with the vector column last)
@@ -82,7 +85,6 @@ impl LanceDbStore {
                 false,
             ),
             // Callers stored as a JSON array string: ["file.rs:12", "other.rs:45"] or "[]"
-            Field::new(col::CALLERS_JSON, DataType::Utf8, false),
         ])
     }
 
@@ -155,7 +157,7 @@ impl LanceDbStore {
             values,
             None,
         )) as Arc<dyn Array>;
-        let serialized : Vec<String>;
+        let serialized: Vec<String>;
         let callers_json = {
             // Serialize each chunk's callers as JSON array string.
             // Keep the serialized strings alive for the duration of this function
