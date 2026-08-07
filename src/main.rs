@@ -5,7 +5,10 @@ use std::{
 };
 
 use clap::{Parser, Subcommand};
-use coderag::{AstChunker, CandleProvider, ChunkStore, EmbeddingProvider, LanceDbStore, ScoredChunk};
+use coderag::{
+    AstChunker, CandleProvider, Chunk, ChunkStore, ChunkType, CoderagConfig, EmbeddingProvider, LanceDbStore,
+    LspClient, ScoredChunk,
+};
 use tracing::instrument;
 use tracing_subscriber::fmt::format::FmtSpan;
 use walkdir::WalkDir;
@@ -20,6 +23,11 @@ struct Cli {
     /// Path to the LanceDB index directory
     #[arg(long, global = true, default_value = ".coderag")]
     db: String,
+
+    /// Path to coderag.toml config file.
+    /// If NOT specified, searches upward from the current working directory.
+    #[arg(long, global = true)]
+    config: Option<PathBuf>,
 
     #[command(subcommand)]
     command: Commands,
@@ -83,14 +91,26 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
+    // Resolve config once for all subcommands.
+    // Priority: --config flag > coderag.toml found from cwd upward > defaults
+    let mut config = match &cli.config {
+        Some(path) => CoderagConfig::load_from_file(path),
+        None => CoderagConfig::load_from_dir(&std::env::current_dir()?),
+    };
+
+    // --db overrides store.path from config file
+    if cli.db != ".coderag" {
+        config.store.path = cli.db.clone();
+    }
+
     match cli.command {
         Commands::Index {
             path,
             exclude_mode,
             exclude,
             include,
-        } => run_index(path, cli.db, exclude_mode, exclude, include).await?,
-        Commands::Query { text, top } => run_query(text, top, cli.db).await?,
+        } => run_index(path, &config, exclude_mode, exclude, include).await?,
+        Commands::Query { text, top } => run_query(text, top, &config).await?,
     }
 
     Ok(())
@@ -98,6 +118,161 @@ async fn main() -> anyhow::Result<()> {
 
 #[instrument(name = "index")]
 async fn run_index(
+    path: PathBuf,
+    config: &CoderagConfig,
+    exclude_mode: Option<ExcludeMode>,
+    exclude: Vec<String>,
+    include: Vec<String>,
+) -> anyhow::Result<()> {
+    let embedder = CandleProvider::new().await?;
+    let store = LanceDbStore::open(&config.store.path, embedder.dimension()).await?;
+    let chunker = AstChunker::default();
+
+    // Initialize LSP client if enabled
+    let mut lsp_client: Option<LspClient> = None;
+    if config.lsp.enabled {
+        let cargo_root = CoderagConfig::find_cargo_root(&path);
+        match cargo_root {
+            Some(root) => {
+                match LspClient::new_rust_analyzer(&config.lsp.rust_analyzer_path, &root, config.lsp.timeout_secs).await
+                {
+                    Ok(client) => {
+                        lsp_client = Some(client);
+                    },
+                    Err(err) => {
+                        tracing::warn!("LSP initialization failed: {err}. Indexing without LSP");
+                    },
+                }
+            },
+            None => {
+                tracing::warn!("No cargo.toml found from {}. Indexing without LSP", path.display());
+            },
+        }
+    }
+    let extensions = ["rs", "cc", "cpp", "cxx", "c", "h", "hpp"];
+    let mut total_files = 0usize;
+    let mut total_chunks = 0usize;
+
+    for entry in walkdir::WalkDir::new(path)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+    {
+        let file_path = entry.path();
+        let ext = file_path.extension().and_then(|ext| ext.to_str()).unwrap_or("");
+        if !extensions.contains(&ext) {
+            continue;
+        }
+
+        let content = match std::fs::read_to_string(file_path) {
+            Ok(c) => c,
+            Err(err) => {
+                tracing::warn!("Skipping {}:{}", file_path.display(), err);
+                continue;
+            },
+        };
+
+        let mut chunks = chunker.chunk_file(file_path, &content);
+        if chunks.is_empty() {
+            continue;
+        }
+
+        // Enrich with callers via LSP if available and the file is Rust
+        if let Some(ref mut lsp) = lsp_client {
+            if ext == "rs" {
+                enrich_with_lsp(lsp, file_path, &mut chunks).await;
+            }
+        }
+
+        // Embed all chunks in a single batch call
+        let texts = chunks.iter().map(|c| c.content.as_str()).collect::<Vec<_>>();
+        let embeddings = embedder.embed(&texts).await?;
+        for (chunk, embedding) in chunks.iter_mut().zip(embeddings) {
+            chunk.embedding = Some(embedding);
+        }
+
+        let n = chunks.len();
+        store.upsert(&chunks).await?;
+
+        let type_summary = build_type_summary(&chunks);
+        tracing::info!("Indexed {} ({} chunks [{}]", file_path.display(), n, type_summary);
+        total_files += 1;
+        total_chunks += n;
+    }
+
+    // Cleanly shut down the LSP server
+    if let Some(mut lsp) = lsp_client {
+        let _ = lsp.shutdown().await;
+    }
+
+    println!("Done. Indexed {total_files} files, {total_chunks} chunks");
+    Ok(())
+}
+
+/// Query LSP for callers of each chunk's symbol and store them in the chunk
+async fn enrich_with_lsp(lsp: &mut LspClient, file_path: &std::path::Path, chunks: &mut Vec<Chunk>) {
+    // Get document symbols: maps symbol name -> position (line, character)
+    let symbols = match lsp.document_symbols(file_path).await {
+        Ok(s) => s,
+        Err(err) => {
+            tracing::debug!("document_symbols failed for {}: {err}", file_path.display());
+            return;
+        },
+    };
+
+
+    for chunk in chunks.iter_mut() {
+        // only query callers for named function/method chunks.
+        let symbol_name = match &chunk.metadata.symbol_name {
+            Some(name) => name.clone(),
+            None => continue,
+        };
+
+        if !matches!(chunk.metadata.chunk_type, ChunkType::Function | ChunkType::Method) {
+            continue;
+        }
+
+        // Find the LSP symbol that matches this chunk;s name
+        let symbol = symbols.iter().find(|symbol| symbol.name == symbol_name);
+
+        let sym = match symbol {
+            Some(s) => s,
+            None => continue,
+        };
+
+        match lsp
+            .references_at(file_path, sym.selection_start_line, sym.selection_start_char)
+            .await
+        {
+            Ok(callers) => {
+                let n = callers.len();
+                chunk.metadata.callers = callers;
+                if n > 0 {
+                    tracing::info!("Enriched {symbol_name}: {n} caller(s)");
+                }
+            },
+            Err(err) => {
+                tracing::debug!("references_at failed for {symbol_name}: {err}");
+            },
+        }
+    }
+}
+
+fn build_type_summary(chunks: &[Chunk]) -> String {
+    let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for chunk in chunks {
+        *counts.entry(chunk.metadata.chunk_type.as_str()).or_insert(0) += 1;
+    }
+
+    let mut parts = counts.iter().map(|(k, v)| format!("{k}:{v}")).collect::<Vec<_>>();
+    parts.sort();
+    parts.join(", ")
+}
+
+
+#[instrument(name = "old-index")]
+async fn old_run_index(
     path: PathBuf,
     db: String,
     exclude_mode: Option<ExcludeMode>,
@@ -107,7 +282,6 @@ async fn run_index(
     let embedder = CandleProvider::new().await?;
     let store = LanceDbStore::open(&db, embedder.dimension()).await?;
     let chunker = AstChunker::default();
-
     let files = collect_files(&path, exclude_mode.as_ref(), &exclude, &include);
 
     let mut total_files = 0usize;
@@ -167,9 +341,49 @@ async fn run_index(
 
     Ok(())
 }
-
 #[instrument(name = "query")]
-async fn run_query(text: String, top: usize, db: String) -> anyhow::Result<()> {
+async fn run_query(text: String, top: usize, config: &CoderagConfig) -> anyhow::Result<()> {
+    let embedder = CandleProvider::new().await?;
+    let store = LanceDbStore::open(&config.store.path, embedder.dimension()).await?;
+
+    let embeddings = embedder.embed(&[text.as_str()]).await?;
+    let results = store.search_vector(&embeddings[0], top).await?;
+
+    if results.is_empty() {
+        println!("No results found. Have you run `coderag index <path>` first?");
+        return Ok(());
+    }
+
+    for (idx, scored) in results.iter().enumerate() {
+        let meta = &scored.chunk.metadata;
+        print!(
+            "\n--- Result {} (score: {:.3}) ---\n{}  [lines {}-{}]",
+            idx + 1,
+            scored.score,
+            meta.file_path.display(),
+            meta.line_start,
+            meta.line_end,
+        );
+
+        if let Some(name) = &meta.symbol_name {
+            print!("  fn {name}");
+        }
+        println!();
+
+        // Show callers if available.
+        if !meta.callers.is_empty() {
+            println!("  called by: {}", meta.callers.join(", "));
+        }
+
+        println!("\n{}", scored.chunk.content);
+    }
+
+
+    Ok(())
+}
+
+#[instrument(name = "old-query")]
+async fn old_run_query(text: String, top: usize, db: String) -> anyhow::Result<()> {
     let embedder = CandleProvider::new().await?;
     let store = LanceDbStore::open(&db, embedder.dimension()).await?;
 

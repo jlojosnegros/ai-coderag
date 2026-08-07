@@ -132,4 +132,9 @@ impl CoderagConfig {
             }
         }
     }
+
+    /// Load config from an explicit file path ( does NOT search upwards)
+    pub fn load_from_file(path: &Path) -> Self {
+        Self::load_file(path)
+    }
 }
