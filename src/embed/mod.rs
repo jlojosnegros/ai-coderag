@@ -17,7 +17,7 @@ use crate::{CoderagError, EmbeddingProvider, Result, embed::jina_model::JinaBert
 /// Weights (around 550MB) are downloaded once from HuggingFace Hub and cached
 /// al $HOME/.cache/huggingface/hub
 pub struct CandleProvider {
-    /// BerModel is Send + Sync (candle tensors are Arc<Storage> internally)
+    /// BerModel is Send + Sync (candle tensors are `Arc<Storage>` internally)
     /// so Arc alone is enough (no Mutex needed)
     model: Arc<JinaBertModel>,
     tokenizer: Arc<Tokenizer>,
