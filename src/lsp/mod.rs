@@ -1,3 +1,4 @@
+mod rust_lsp;
 use std::{
     fs::read_to_string,
     path::Path,
@@ -5,7 +6,14 @@ use std::{
     time::Duration,
 };
 
-use lsp_types::{DocumentSymbol as LspDocSymbol, Location as LspLocation, SymbolKind as LspSymbolKind};
+use lsp_types::{
+    ClientCapabilities, DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentSymbol as LspDocSymbol,
+    DocumentSymbolParams, InitializeParams, Location as LspLocation, PartialResultParams, Position, ReferenceContext,
+    ReferenceParams, SymbolKind as LspSymbolKind, TextDocumentIdentifier, TextDocumentItem, TextDocumentPositionParams,
+    Uri, WorkDoneProgressParams,
+};
+pub use rust_lsp::RustLsp;
+use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
@@ -14,7 +22,10 @@ use tokio::{
 };
 use url::Url;
 
-use crate::{CoderagError, Result};
+use crate::{
+    CoderagError, Result,
+    traits::{LanguageLsp, LspServerConfig},
+};
 
 /// A sequential LSP client that talks to a language server over stdio.
 ///
@@ -28,22 +39,29 @@ pub struct LspClient {
     next_id: AtomicU64,
     timeout_secs: u64,
     path_filter: String,
+
+    /// LSP language identifier (e.g. "rust", "cpp", "go"), used in didOpen
+    language_id: String,
 }
 
 impl LspClient {
-    /// Spawn rust-analyzer and perform the LSP initialize handshake.
+    /// Spawn a language server and perform the LSP initialize handshake.
     ///
-    /// `root_path` must be the directory contaning `Cargo.toml`
-    pub async fn new_rust_analyzer(rust_analyzer_bin: &str, root_path: &Path, timeout_secs: u64) -> Result<Self> {
+    /// `lsp` provides language-specific knowledge( capabilities, language id, etc)
+    /// `config` provides deployment details ( binary path, args, timeout, etc)
+    /// `root_path` must be the project root for the language (e.g. directory containing Cargo.toml for Rust)
+    pub async fn new(lsp: &dyn LanguageLsp, config: &LspServerConfig, root_path: &Path) -> Result<Self> {
         let root_uri = path_to_file_uri(root_path)?;
         let path_filter = root_path.to_string_lossy().to_string();
+        let language_id = lsp.language_id().to_string();
 
-        let mut child = Command::new(rust_analyzer_bin)
+        let mut child = Command::new(&config.command)
+            .args(&config.args)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
             .spawn()
-            .map_err(|err| CoderagError::Lsp(format!("failed to spawn {rust_analyzer_bin}: {err}")))?;
+            .map_err(|err| CoderagError::Lsp(format!("failed to spawn {}: {err}", config.command)))?;
 
         let stdin = child
             .stdin
@@ -54,6 +72,7 @@ impl LspClient {
             .stdout
             .take()
             .ok_or_else(|| CoderagError::Lsp("child has not stdout".to_string()))?;
+
         let stdout = BufReader::new(stdout_raw);
 
         let mut client = Self {
@@ -61,12 +80,19 @@ impl LspClient {
             stdin,
             stdout,
             next_id: AtomicU64::new(0),
-            timeout_secs,
+            timeout_secs: config.timeout_secs,
             path_filter,
+            language_id,
         };
 
-        client.initialize(&root_uri).await?;
-        tracing::info!("LSP client initialized for {}", root_path.display());
+        let capabilities = lsp.initialize_capabilities();
+
+        client.initialize(&root_uri, &capabilities).await?;
+        tracing::info!(
+            "LSP client initialized for {} ({})",
+            root_path.display(),
+            lsp.language_id()
+        );
 
         Ok(client)
     }
@@ -78,6 +104,7 @@ impl LspClient {
     /// Send a JSON-RPC message with Content-Length framing.
     async fn send(&mut self, msg: &Value) -> Result<()> {
         let body = serde_json::to_string(msg).map_err(|e| CoderagError::Lsp(format!("serialize error: {e}")))?;
+
         let header = format!("Content-Length: {}\r\n\r\n", body.len());
 
         self.stdin
@@ -122,6 +149,12 @@ impl LspClient {
             }
         }
 
+        if content_length == 0 {
+            return Err(CoderagError::Lsp(
+                "missing Content-Length header in server response".to_string(),
+            ));
+        }
+
         // Read exactly content_length bytes
         let mut body = vec![0u8; content_length];
         self.stdout
@@ -134,22 +167,15 @@ impl LspClient {
 
     /// Send a request and wait for the response with the matching id.
     /// Discards all notifications that arrive before the response.
-    ///
-    /// rust-analyzer send proactive notifications at any moment.
-    /// - `$/progress` -> indexing in progress ("indexing 15%", "indexing 30%", etc)
-    /// - `textDocument/publishDiagnostics` -- compilation errors found
-    /// - `window/logMessage` -- server internal logs
-    ///
-    /// This notifications are sent in between requests and responses
-    /// so we need to discard anything that is not a response with the
-    /// very same Id of our request
-    async fn request(&mut self, method: &str, params: Value) -> Result<Value> {
+    async fn request(&mut self, method: &str, params: impl Serialize) -> Result<Value> {
         let id = self.next_id();
+        let params_value =
+            serde_json::to_value(params).map_err(|err| CoderagError::Lsp(format!("serialize params: {err}")))?;
         self.send(&json!({
             "jsonrpc": "2.0",
             "id": id,
             "method": method,
-            "params": params,
+            "params": params_value,
         }))
         .await?;
 
@@ -183,39 +209,31 @@ impl LspClient {
     }
 
     /// Send notification. No response expected
-    async fn notify(&mut self, method: &str, params: Value) -> Result<()> {
+    async fn notify(&mut self, method: &str, params: impl Serialize) -> Result<()> {
+        let params_value =
+            serde_json::to_value(params).map_err(|err| CoderagError::Lsp(format!("serialize params {err}")))?;
+
         self.send(&json!({
             "jsonrpc": "2.0",
             "method" : method,
-            "params": params,
+            "params": params_value,
         }))
         .await
     }
 
     // --- LSP lifecycle ---
-    async fn initialize(&mut self, root_uri: &str) -> Result<()> {
-        let _result = self
-            .request(
-                "initialize",
-                json!({
-                    "processId": std::process::id(),
-                    "rootUri": root_uri,
-                    "capabilities": {
-                        "textDocument": {
-                            "documentSymbol" : {
-                                // true means server return DocumentSymbol[] with selectionRange
-                                // and children.
-                                // false means server returns SymbolInformation[] without
-                                // selectionRange, which is not enough for references_at
-                                // positioning
-                                "hierarchicalDocumentSymbolSupport": true
-                            },
-                            "references": {}
-                        }
-                    }
-                }),
-            )
-            .await?;
+    #[allow(deprecated)]
+    async fn initialize(&mut self, root_uri: &Uri, capabilities: &ClientCapabilities) -> Result<()> {
+        // root_uri deprecated in LSP 3.6 (use workspace_folders)
+        // but most LSP servers still require it for workspace init
+        let params = InitializeParams {
+            process_id: Some(std::process::id()),
+            root_uri: Some(root_uri.clone()),
+            capabilities: capabilities.clone(),
+            ..Default::default()
+        };
+
+        let _result = self.request("initialize", params).await?;
 
         // The "initialized" notification must be sent after receiving the initialize response
         self.notify("initialized", json!({})).await?;
@@ -235,62 +253,50 @@ impl LspClient {
 
     /// Open a document in the server
     /// required before any textDocument request
-    async fn open_document(&mut self, file_path: &Path, language_id: &str) -> Result<String> {
+    async fn open_document(&mut self, file_path: &Path) -> Result<Uri> {
         let content = read_to_string(file_path).map_err(CoderagError::Io)?;
         let uri = path_to_file_uri(file_path)?;
 
-        self.notify(
-            "textDocument/didOpen",
-            json!({
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": language_id,
-                    "version": 1,
-                    "text": content,
-                }
-            }),
-        )
-        .await?;
+        let params = DidOpenTextDocumentParams {
+            text_document: TextDocumentItem::new(uri.clone(), self.language_id.clone(), 1, content),
+        };
+
+        self.notify("textDocument/didOpen", params).await?;
 
         Ok(uri)
     }
 
-    async fn close_document(&mut self, uri: &str) -> Result<()> {
-        self.notify(
-            "textDocument/didClose",
-            json!({
-                "textDocument":{
-                    "uri": uri
-                }
-            }),
-        )
-        .await
+    async fn close_document(&mut self, uri: &Uri) -> Result<()> {
+        let params = DidCloseTextDocumentParams {
+            text_document: TextDocumentIdentifier::new(uri.clone()),
+        };
+        self.notify("textDocument/didClose", params).await
     }
 
     /// Get all named symbols in a file.
     /// Returns a list of (name, kond, start_line) tuples
     /// Line numbers are 0-based (lsp convention)
     pub async fn document_symbols(&mut self, file_path: &Path) -> Result<Vec<DocumentSymbol>> {
-        let uri = self.open_document(file_path, "rust").await?;
+        let uri = self.open_document(file_path).await?;
 
         let mut symbols = Vec::new();
         // TODO This number of retries should be configurable
         for attempt in 0..5 {
             let delay = Duration::from_millis(200 * (attempt + 1));
-            // give rust-analyzer a moment to parse the file.
+            // give it a moment to parse the file.
             // whitout this it may return an empty result for the first request
             tokio::time::sleep(delay).await;
 
-            let result = self
-                .request(
-                    "textDocument/documentSymbol",
-                    json!({
-                        "textDocument" : {
-                            "uri" : uri
-                        }
-                    }),
-                )
-                .await?;
+            // work_done_progress_params / partial_result_params: LSP 3.17
+            // optional mixins for progress reporting and incremental results.
+            // Both default to None (disabled) since coderag has no progress UI.
+            let params = DocumentSymbolParams {
+                text_document: TextDocumentIdentifier::new(uri.clone()),
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            };
+
+            let result = self.request("textDocument/documentSymbol", params).await?;
             symbols = parse_document_symbols(result)?;
             if !symbols.is_empty() {
                 break;
@@ -302,28 +308,39 @@ impl LspClient {
     }
 
     pub async fn references_at(&mut self, file_path: &Path, line: u32, character: u32) -> Result<Vec<String>> {
-        let uri = self.open_document(file_path, "rust").await?;
+        let uri = self.open_document(file_path).await?;
 
-        // Give rust analyzer time to analyze the file.
+        // Give it to analyze the file.
         tokio::time::sleep(Duration::from_millis(500)).await;
 
-        let result = self
-            .request(
-                "textDocument/references",
-                json!({
-                    "textDocument": { "uri": uri},
-                    "position" : {"line": line, "character": character},
-                    "context" : { "includeDeclaration": false}
-                }),
-            )
-            .await?;
+        // text_document_position: which file + cursor position to find references for.
+        // context.include_declaration: false = exclude the definition itself,
+        //   only return call sites (callers).
+        // work_done_progress_params / partial_result_params: LSP 3.17
+        //   optional mixins, disabled (None) since coderag has no progress UI.
+        let params = ReferenceParams {
+            text_document_position: TextDocumentPositionParams::new(
+                TextDocumentIdentifier::new(uri.clone()),
+                Position::new(line, character),
+            ),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+            context: ReferenceContext {
+                include_declaration: false,
+            },
+        };
+
+        let result = self.request("textDocument/references", params).await?;
 
         let _ = self.close_document(&uri).await;
 
-        let locations: Vec<LspLocation> = serde_json::from_value(result).unwrap_or_default();
+        let locations: Vec<LspLocation> = serde_json::from_value(result).unwrap_or_else(|err| {
+            tracing::warn!("references_at: failed to parse response: {err}");
+            Vec::new()
+        });
         let mut callers = Vec::new();
+
         for loc in locations {
-            // filter out references from external crates
             // lsp_types::Uri has no to_file_path(), parse as url::Url first.
             let url = match Url::parse(loc.uri.as_str()) {
                 Ok(u) => u,
@@ -333,7 +350,7 @@ impl LspClient {
                 },
             };
 
-            if !url.path().contains(self.path_filter.as_str()) {
+            if !url.path().starts_with(self.path_filter.as_str()) {
                 continue;
             }
             if let Ok(ref_path) = url.to_file_path() {
@@ -366,7 +383,7 @@ pub struct DocumentSymbol {
     pub selection_start_char: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SymbolKind {
     Function,
     Method,
@@ -432,14 +449,246 @@ fn flatten_symbols(symbols: Vec<LspDocSymbol>, out: &mut Vec<DocumentSymbol>) {
     }
 }
 
-fn path_to_file_uri(path: &Path) -> Result<String> {
+/// Convert a filesystem path to a `file://` URI string as required by LSP.
+///
+/// Accepts both relative and absolute paths. Relative paths are resolved
+/// against `std::env::current_dir()` before conversion, because
+/// `Url::from_file_path` rejects non-absolute paths.
+///
+/// Returns `Ok("file:///home/user/project/src/main.rs")` on success.
+///
+/// # Errors
+///
+/// - `CoderagError::Io` if the working directory cannot be read (e.g. it was deleted while the process was running).
+/// - `CoderagError::Lsp` if `Url::from_file_path` rejects the absolute path (on Windows this happens for paths like
+///   `C:foo` that are drive-relative but not fully qualified).
+fn path_to_file_uri(path: &Path) -> Result<Uri> {
     let abs = if path.is_absolute() {
         path.to_path_buf()
     } else {
         std::env::current_dir().map_err(CoderagError::Io)?.join(path)
     };
 
-    Url::from_file_path(&abs)
-        .map(|url| url.to_string())
-        .map_err(|_| CoderagError::Lsp(format!("cannot convert path to URI: {}", abs.display())))
+    let url = Url::from_file_path(&abs)
+        .map_err(|_| CoderagError::Lsp(format!("cannot convert path to URI: {}", abs.display())))?;
+
+    url.as_str()
+        .parse::<Uri>()
+        .map_err(|err| CoderagError::Lsp(format!("invalid URI '{}' : '{err}", url)))
+}
+
+#[cfg(test)]
+mod tests {
+    use lsp_types::{DocumentSymbolClientCapabilities, TextDocumentClientCapabilities};
+    use serde_json::json;
+
+    use super::*;
+    use crate::lsp::rust_lsp::RustLsp;
+
+    #[test]
+    fn initialize_params_includes_hierarchical_support() {
+        #[allow(deprecated)]
+        let params = InitializeParams {
+            process_id: Some(42),
+            root_uri: Some("file:///tmp/project".parse().unwrap()),
+            capabilities: ClientCapabilities {
+                text_document: Some(TextDocumentClientCapabilities {
+                    document_symbol: Some(DocumentSymbolClientCapabilities {
+                        hierarchical_document_symbol_support: Some(true),
+                        ..Default::default()
+                    }),
+                    references: Some(Default::default()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let json = serde_json::to_value(&params).unwrap();
+
+        assert_eq!(json["processId"], 42);
+        assert_eq!(json["rootUri"], "file:///tmp/project");
+        assert_eq!(
+            json["capabilities"]["textDocument"]["documentSymbol"]["hierarchicalDocumentSymbolSupport"],
+            true
+        );
+        assert!(json["capabilities"]["textDocument"]["references"].is_object());
+    }
+
+    #[test]
+    fn reference_params_serializes_correctly() {
+        let uri: Uri = "file:///tmp/test.rs".parse().unwrap();
+        let params = ReferenceParams {
+            text_document_position: TextDocumentPositionParams::new(
+                TextDocumentIdentifier::new(uri),
+                Position::new(10, 5),
+            ),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+            context: ReferenceContext {
+                include_declaration: false,
+            },
+        };
+
+        let json = serde_json::to_value(&params).unwrap();
+
+        assert_eq!(json["textDocument"]["uri"], "file:///tmp/test.rs");
+        assert_eq!(json["position"]["line"], 10);
+        assert_eq!(json["position"]["character"], 5);
+        assert_eq!(json["context"]["includeDeclaration"], false);
+        assert!(json.get("workDoneToken").is_none());
+        assert!(json.get("partialResultToken").is_none());
+    }
+
+    #[test]
+    fn document_symbol_params_serializes_correctly() {
+        let uri: Uri = "file:///tmp/lib.rs".parse().unwrap();
+        let params = DocumentSymbolParams {
+            text_document: TextDocumentIdentifier::new(uri),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        };
+
+        let json = serde_json::to_value(&params).unwrap();
+
+        assert_eq!(json["textDocument"]["uri"], "file:///tmp/lib.rs");
+        assert!(json.get("workDoneToken").is_none());
+        assert!(json.get("partialResultToken").is_none());
+    }
+
+    #[test]
+    fn parse_document_symbols_flattens_hierarchy() {
+        let response = json!([
+            {
+                "name": "filter_items",
+                "kind": LspSymbolKind::FUNCTION,
+                "selectionRange": {
+                    "start": { "line": 4, "character": 3 },
+                    "end": { "line": 4, "character": 15 }
+                },
+                "range": {
+                    "start": { "line": 3, "character": 0 },
+                    "end": { "line": 8, "character": 1 }
+                }
+            },
+            {
+                "name": "Item",
+                "kind": LspSymbolKind::STRUCT,
+                "selectionRange": {
+                    "start": { "line": 0, "character": 7 },
+                    "end": { "line": 0, "character": 11 }
+                },
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": 2, "character": 1 }
+                },
+                "children": [
+                    {
+                        "name": "process",
+                        "kind": LspSymbolKind::METHOD,
+                        "selectionRange": {
+                            "start": { "line": 10, "character": 11 },
+                            "end": { "line": 10, "character": 18 }
+                        },
+                        "range": {
+                            "start": { "line": 10, "character": 4 },
+                            "end": { "line": 12, "character": 5 }
+                        }
+                    }
+                ]
+            },
+            {
+                "name": "Status",
+                "kind": LspSymbolKind::ENUM,
+                "selectionRange": {
+                    "start": { "line": 15, "character": 5 },
+                    "end": { "line": 15, "character": 11 }
+                },
+                "range": {
+                    "start": { "line": 15, "character": 0 },
+                    "end": { "line": 18, "character": 1 }
+                }
+            },
+            {
+                "name": "Processor",
+                "kind": LspSymbolKind::INTERFACE,
+                "selectionRange": {
+                    "start": { "line": 20, "character": 6 },
+                    "end": { "line": 20, "character": 15 }
+                },
+                "range": {
+                    "start": { "line": 20, "character": 0 },
+                    "end": { "line": 22, "character": 1 }
+                }
+            },
+            {
+                "name": "MAGIC",
+                "kind": 99,
+                "selectionRange": {
+                    "start": { "line": 24, "character": 6 },
+                    "end": { "line": 24, "character": 11 }
+                },
+                "range": {
+                    "start": { "line": 24, "character": 0 },
+                    "end": { "line": 24, "character": 20 }
+                }
+            }
+        ]);
+
+        let symbols = parse_document_symbols(response).unwrap();
+
+        assert_eq!(symbols.len(), 6);
+
+        assert_eq!(symbols[0].name, "filter_items");
+        assert_eq!(symbols[0].kind, SymbolKind::Function);
+        assert_eq!(symbols[0].selection_start_line, 4);
+        assert_eq!(symbols[0].selection_start_char, 3);
+
+        assert_eq!(symbols[1].name, "Item");
+        assert_eq!(symbols[1].kind, SymbolKind::Struct);
+
+        assert_eq!(symbols[2].name, "process");
+        assert_eq!(symbols[2].kind, SymbolKind::Method);
+        assert_eq!(symbols[2].selection_start_line, 10);
+
+        assert_eq!(symbols[3].name, "Status");
+        assert_eq!(symbols[3].kind, SymbolKind::Enum);
+
+        assert_eq!(symbols[4].name, "Processor");
+        assert_eq!(symbols[4].kind, SymbolKind::Interface);
+
+        assert_eq!(symbols[5].name, "MAGIC");
+        assert_eq!(symbols[5].kind, SymbolKind::Other);
+    }
+
+    #[test]
+    fn parse_document_symbols_handles_null() {
+        let symbols = parse_document_symbols(Value::Null).unwrap();
+        assert!(symbols.is_empty());
+    }
+
+    #[test]
+    fn parse_document_symbols_returns_error_for_invalid_json() {
+        let result = parse_document_symbols(json!({"not": "an array"}));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn path_to_file_uri_returns_valid_uri() {
+        let path = Path::new("/home/user/project/src/lib.rs");
+        let uri = path_to_file_uri(path).unwrap();
+        assert!(uri.as_str().starts_with("file:///"));
+        assert!(uri.as_str().contains("lib.rs"));
+    }
+    #[tokio::test]
+    async fn new_returns_error_for_missing_binary() {
+        let config = LspServerConfig {
+            command: "nonexistent-lsp-binary".to_string(),
+            args: Vec::new(),
+            timeout_secs: 1,
+        };
+        let result = LspClient::new(&RustLsp, &config, Path::new("/tmp")).await;
+        assert!(result.is_err());
+    }
 }

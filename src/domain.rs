@@ -18,7 +18,7 @@ impl ChunkId {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Language {
     Rust,
     Cpp,

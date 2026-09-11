@@ -2,10 +2,16 @@ use std::path::Path;
 
 use crate::{
     Chunk, ChunkId, ChunkMetadata, ChunkType, Language,
-    parser::{LanguagePlugin, field},
+    parser::{LanguageParser, field},
 };
 
 pub struct RustPlugin;
+
+impl Default for RustPlugin {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl RustPlugin {
     pub fn new() -> Self {
@@ -27,7 +33,7 @@ impl RustPlugin {
 //               ├── function_item "new"    ← extracted as Method
 //               └── function_item "run"   ← extracted as Method
 // ```
-impl LanguagePlugin for RustPlugin {
+impl LanguageParser for RustPlugin {
     fn file_extensions(&self) -> &[&str] {
         &["rs"]
     }
@@ -207,7 +213,7 @@ mod tests {
 
     use crate::{
         ChunkType,
-        parser::{LanguagePlugin, rust::RustPlugin},
+        parser::{LanguageParser, rust::RustPlugin},
     };
 
     fn path(name: &str) -> PathBuf {

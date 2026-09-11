@@ -1,7 +1,8 @@
-use std::{fs::read_to_string, path::Path};
+use std::{fs::read_to_string, path::Path, sync::Arc};
 
 use coderag::{
-    CandleProvider, ChunkStore, ChunkType, EmbeddingProvider, LanceDbStore, LineChunker, parser::AstChunker,
+    CandleProvider, ChunkStore, ChunkType, EmbeddingProvider, LanceDbStore, LineChunker, LspServerConfig, RustLsp,
+    parser::AstChunker, registry::LanguageRegistry,
 };
 use tempfile::TempDir;
 
@@ -17,15 +18,9 @@ macro_rules! assert_has_symbol {
 
 macro_rules! assert_has_symbols {
     ($symbols:expr, $($name:expr),+ $(,)?) => {
-        $(
-            assert!(
-                $symbols.iter().any(|s| s.name == $name),
-                "Should find {} symbol", $name
-            );
-        )+
+        $( assert_has_symbol!($symbols, $name); )+
     };
 }
-
 
 /// Full pipeline test: index the mini-rust fixture, query it, verify results.
 /// Uses a temporary directory for the LanceDB database (cleaned up after the test)
@@ -125,7 +120,8 @@ async fn rust_chunks_have_correct_types_and_symbols() {
 
     let embedder = CandleProvider::new().await.unwrap();
     let store = LanceDbStore::open(&db_path, embedder.dimension()).await.unwrap();
-    let chunker = AstChunker::new();
+    let registry = Arc::new(LanguageRegistry::with_builtins());
+    let chunker = AstChunker::new(registry);
 
     let fixture = Path::new("tests/fixtures/mini-rust/src/processor.rs");
     let content = read_to_string(fixture).unwrap();
@@ -173,7 +169,8 @@ async fn query_returns_relevant_results_after_ast_indexing() {
 
     let embedder = CandleProvider::new().await.unwrap();
     let store = LanceDbStore::open(&db_path, embedder.dimension()).await.unwrap();
-    let chunker = AstChunker::new();
+    let registry = Arc::new(LanguageRegistry::with_builtins());
+    let chunker = AstChunker::new(registry);
 
     // Index all Rust fixture files.
     for file_name in &["io.rs", "config.rs", "processor.rs"] {
@@ -207,7 +204,7 @@ async fn lsp_enriches_chunks_with_callers() {
         .output()
         .is_err()
     {
-        eprintln!("SKIP: rust-analizyer not found in PATH");
+        eprintln!("SKIP: rust-analyzer not found in PATH");
         return;
     }
 
@@ -216,7 +213,14 @@ async fn lsp_enriches_chunks_with_callers() {
     let fixture_root = std::path::Path::new("tests/fixtures/mini-rust");
     let fixture_src = fixture_root.join("src/processor.rs");
 
-    let mut client = LspClient::new_rust_analyzer("rust-analyzer", fixture_root, 60)
+    let lsp = RustLsp;
+    let server_config = LspServerConfig {
+        command: "rust-analyzer".to_string(),
+        args: Vec::new(),
+        timeout_secs: 60,
+    };
+
+    let mut client = LspClient::new(&lsp, &server_config, fixture_root)
         .await
         .expect("failed to initialize LSP client");
 

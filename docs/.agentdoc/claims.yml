@@ -15,7 +15,7 @@ claims:
   - id: arch-1
     type: data_flow
     scope: overlay
-    claim: "The index pipeline is: collect_files → read file → AstChunker.chunk_file (dispatches to LanguagePlugin, falls back to LineChunker on empty result) → FastembedProvider.embed (batch) → LanceDbStore.upsert."
+    claim: "The index pipeline is: collect_files → read file → AstChunker.chunk_file (dispatches to LanguageParser, falls back to LineChunker on empty result) → FastembedProvider.embed (batch) → LanceDbStore.upsert."
     source: "src/main.rs"
     provenance:
       origin: inferred

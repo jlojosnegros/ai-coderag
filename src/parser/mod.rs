@@ -3,10 +3,10 @@ mod rust;
 
 use std::{path::Path, sync::Arc};
 
-use crate::{
-    Chunk, LineChunker,
-    parser::{cpp::CppPlugin, rust::RustPlugin},
-};
+pub use cpp::CppPlugin;
+pub use rust::RustPlugin;
+
+use crate::{Chunk, LineChunker, registry::LanguageRegistry};
 
 /// Grammar field name constants for tree-sitter child_by_field_name() calls.
 pub(super) mod field {
@@ -18,7 +18,7 @@ pub(super) mod field {
 
 /// Trait implemented by each language-specific parser.
 /// A plugin receives raw source text and return semantic chunks.
-pub trait LanguagePlugin: Send + Sync {
+pub trait LanguageParser: Send + Sync {
     /// File extensions handled by this plugin(without the leading dot)
     fn file_extensions(&self) -> &[&str];
 
@@ -26,27 +26,20 @@ pub trait LanguagePlugin: Send + Sync {
     fn chunk_file(&self, path: &Path, source: &str) -> Vec<Chunk>;
 }
 
-/// Routes each file to the appropiate LanguagePlugin based on extension.
+/// Routes each file to the appropiate LanguageParser based on extension.
 /// fall back to LineChunker for unknown or unparseable files.
 pub struct AstChunker {
-    plugins: Vec<Arc<dyn LanguagePlugin>>,
+    registry: Arc<LanguageRegistry>,
     fallback: LineChunker,
 }
 
 impl AstChunker {
-    /// Create an AstChunker with the built-in Rust and C++ plugins registered
-    pub fn new() -> Self {
-        let mut chunker = Self {
-            plugins: Vec::new(),
+    /// Create an AstChunker backed by the given registry
+    pub fn new(registry: Arc<LanguageRegistry>) -> Self {
+        Self {
+            registry,
             fallback: LineChunker::default(),
-        };
-        chunker.register(RustPlugin::new());
-        chunker.register(CppPlugin::new());
-        chunker
-    }
-
-    pub fn register<P: LanguagePlugin + 'static>(&mut self, plugin: P) {
-        self.plugins.push(Arc::new(plugin));
+        }
     }
 
     /// Chunk a source file using the appropiate plugin.
@@ -55,26 +48,21 @@ impl AstChunker {
     pub fn chunk_file(&self, path: &Path, source: &str) -> Vec<Chunk> {
         let ext = path.extension().and_then(|ext| ext.to_str()).unwrap_or("");
 
-        for plugin in &self.plugins {
-            if plugin.file_extensions().contains(&ext) {
-                let chunks = plugin.chunk_file(path, source);
-                if !chunks.is_empty() {
-                    return chunks;
-                }
-                // plugin produced nothing
-                // fall through to the fallback chunker
-                tracing::debug!(
-                    file_path = %&path.display(),
-                    "pluging returned no chunks, falling to LineChunker",
-                );
-                break;
+        if let Some(parser) = self.registry.parser_for_extension(ext) {
+            let chunks = parser.chunk_file(path, source);
+            if !chunks.is_empty() {
+                return chunks;
             }
         }
+        tracing::debug!(
+            file_path = %&path.display(),
+            "parser returned no chunks, failing to LineChunker",
+        );
         self.fallback.chunk_file(path, source)
     }
 }
 impl Default for AstChunker {
     fn default() -> Self {
-        Self::new()
+        Self::new(Arc::new(LanguageRegistry::with_builtins()))
     }
 }

@@ -2,10 +2,16 @@ use std::path::Path;
 
 use crate::{
     Chunk, ChunkId, ChunkMetadata, ChunkType, Language,
-    parser::{LanguagePlugin, field},
+    parser::{LanguageParser, field},
 };
 
 pub struct CppPlugin;
+
+impl Default for CppPlugin {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl CppPlugin {
     pub fn new() -> Self {
@@ -13,7 +19,7 @@ impl CppPlugin {
     }
 }
 
-impl LanguagePlugin for CppPlugin {
+impl LanguageParser for CppPlugin {
     fn file_extensions(&self) -> &[&str] {
         &["cc", "cpp", "cxx", "c", "h", "hpp"]
     }
