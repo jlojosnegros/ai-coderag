@@ -4,6 +4,7 @@ pub mod domain;
 pub mod embed;
 pub mod error;
 pub mod lsp;
+mod mcp;
 pub mod parser;
 pub mod registry;
 pub mod store;
