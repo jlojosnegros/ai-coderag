@@ -45,13 +45,11 @@ impl std::fmt::Display for Freshness {
 /// Metadata attached to every data-returning MCP tool response
 ///
 /// This will be emitter in two places at the same time.
-/// 1. The `_meta` field of CallToolResult for MCP clients to parse. Today most
-/// clients drops this part silently but the MCP spec is trending towards making
-/// it mandatory.
+/// 1. The `_meta` field of CallToolResult for MCP clients to parse. Today most clients drop this part silently but the
+///    MCP spec is trending towards making it mandatory.
 ///
-/// 2. The first line of the text content (human readable ), LLMs that still drop
-///  _meta will read it from here
-/// format: [source: lsp | freshness: current | detail: ... ]
+/// 2. The first line of the text content (human readable). LLMs that still drop `_meta` will read it from here. Format:
+///    `[source: lsp | freshness: current | detail: ... ]`
 pub struct ResponseMeta {
     pub source: SourceLevel,
     pub freshness: Freshness,

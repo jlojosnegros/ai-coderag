@@ -57,11 +57,6 @@ impl LspConfig {
     }
 }
 
-#[derive(Debug, Default, Deserialize)]
-pub struct IndexerConfig {
-    #[serde(default)]
-    pub exclude_patterns: Vec<String>,
-}
 
 #[derive(Debug, Deserialize)]
 pub struct StoreConfig {
@@ -83,9 +78,6 @@ impl Default for StoreConfig {
 
 #[derive(Debug, Default, Deserialize)]
 pub struct CoderagConfig {
-    #[serde(default)]
-    pub indexer: IndexerConfig,
-
     #[serde(default)]
     pub lsp: LspConfig,
 

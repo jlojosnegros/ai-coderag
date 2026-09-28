@@ -42,6 +42,8 @@ check: fmt-check clippy
 fix:
     cargo fix --allow-dirty --allow-staged
 
+fix-check: fix-clippy
+
 # Apply clippy-suggested fixes automatically
 fix-clippy:
     cargo clippy --all-targets --fix --allow-dirty

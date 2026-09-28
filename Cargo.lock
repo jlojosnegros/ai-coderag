@@ -875,7 +875,6 @@ dependencies = [
  "tree-sitter-cpp",
  "tree-sitter-rust",
  "url",
- "walkdir",
 ]
 
 [[package]]

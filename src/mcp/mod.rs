@@ -4,7 +4,7 @@ use rmcp::tool_router;
 
 use crate::{CoderagConfig, registry::LanguageRegistry};
 
-mod response;
+pub(crate) mod response;
 
 /// Central MCP server struct
 ///
