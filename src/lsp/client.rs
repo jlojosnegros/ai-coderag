@@ -45,15 +45,28 @@ pub(crate) struct LspClient {
 impl LspClient {
     /// Spawn a language server and perform the LSP initialize handshake.
     ///
-    /// `lsp` provides language-specific knowledge( capabilities, language id, etc)
-    /// `config` provides deployment details ( binary path, args, timeout, etc)
-    /// `root_path` must be the project root for the language (e.g. directory containing Cargo.toml for Rust)
+    /// - `lsp` provides language-specific knowledge( capabilities, language id, etc)
+    /// - `config` provides deployment details ( binary path, args, timeout, etc)
+    /// - `root_path` must be the project root for the language (e.g. directory containing Cargo.toml for Rust)
+    #[deprecated(note = "use new_from_parts; this wrapper will be removed when all callers migrate")]
     pub async fn new(lsp: &dyn LanguageLsp, config: &LspServerConfig, root_path: &Path) -> Result<Self> {
+        let capabilities = lsp.initialize_capabilities();
+        let language_id = lsp.language_id();
+        Self::new_from_parts(config, root_path, &capabilities, language_id).await
+    }
+
+    /// Creates an LspClient by spawning the process and performing the
+    /// initialize handshake.
+    pub(crate) async fn new_from_parts(
+        config: &LspServerConfig,
+        root_path: &Path,
+        capabilities: &ClientCapabilities,
+        language_id: &str,
+    ) -> Result<Self> {
         let root_uri = path_to_file_uri(root_path)?;
         let path_filter = root_path.to_string_lossy().to_string();
-        let language_id = lsp.language_id().to_string();
 
-        let mut child = Command::new(&config.command)
+        let mut child = tokio::process::Command::new(&config.command)
             .args(&config.args)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -64,34 +77,26 @@ impl LspClient {
         let stdin = child
             .stdin
             .take()
-            .ok_or_else(|| CoderagError::Lsp("child has no stdin".to_string()))?;
+            .ok_or_else(|| CoderagError::Lsp("child has no stdin".into()))?;
 
         let stdout_raw = child
             .stdout
             .take()
-            .ok_or_else(|| CoderagError::Lsp("child has not stdout".to_string()))?;
-
-        let stdout = BufReader::new(stdout_raw);
+            .ok_or_else(|| CoderagError::Lsp("child has no stdout".into()))?;
 
         let mut client = Self {
             child,
             stdin,
-            stdout,
-            next_id: AtomicU64::new(0),
+            stdout: tokio::io::BufReader::new(stdout_raw),
+            next_id: std::sync::atomic::AtomicU64::new(0),
             timeout_secs: config.timeout_secs,
             path_filter,
-            language_id,
+            language_id: language_id.to_string(),
         };
 
-        let capabilities = lsp.initialize_capabilities();
+        client.initialize(&root_uri, capabilities).await?;
 
-        client.initialize(&root_uri, &capabilities).await?;
-        tracing::info!(
-            "LSP client initialized for {} ({})",
-            root_path.display(),
-            lsp.language_id()
-        );
-
+        tracing::info!("LSP client initialized for {} ({})", root_path.display(), language_id);
         Ok(client)
     }
 
@@ -163,9 +168,12 @@ impl LspClient {
         serde_json::from_slice(&body).map_err(|e| CoderagError::Lsp(format!("deserialize body: {e}")))
     }
 
-    /// Send a request and wait for the response with the matching id.
-    /// Discards all notifications that arrive before the response.
-    async fn request(&mut self, method: &str, params: impl Serialize) -> Result<Value> {
+    async fn request_core(
+        &mut self,
+        method: &str,
+        params: impl Serialize,
+        mut on_notification: impl FnMut(Value),
+    ) -> Result<Value> {
         let id = self.next_id();
         let params_value =
             serde_json::to_value(params).map_err(|err| CoderagError::Lsp(format!("serialize params: {err}")))?;
@@ -194,16 +202,32 @@ impl LspClient {
                 return Ok(msg.get("result").cloned().unwrap_or(Value::Null));
             }
 
-            // If reach here: this is a notification or a response with a
-            // different id
-            // As this is a sequential client there should not be any other
-            // reponse than our own response so we can safely say this is
-            // a server notification
+            on_notification(msg);
+        }
+    }
+
+    /// Send a request and wait for the response with the matching id.
+    /// Discards all notifications that arrive before the response.
+    pub(crate) async fn request(&mut self, method: &str, params: impl Serialize) -> Result<Value> {
+        self.request_core(method, params, |msg| {
             tracing::trace!(
                 "Discarding notification: {}",
                 msg.get("method").and_then(serde_json::Value::as_str).unwrap_or("?")
             );
-        }
+        })
+        .await
+    }
+
+    /// Send a request and wait for the response with the matching id.
+    /// Stores all notifications that arrive before the reponse in `captured`
+    /// for later process
+    pub(crate) async fn request_capturing(
+        &mut self,
+        method: &str,
+        params: impl Serialize,
+        captured: &mut Vec<Value>,
+    ) -> Result<Value> {
+        self.request_core(method, params, |msg| captured.push(msg)).await
     }
 
     /// Send notification. No response expected
@@ -251,7 +275,7 @@ impl LspClient {
 
     /// Open a document in the server
     /// required before any textDocument request
-    async fn open_document(&mut self, file_path: &Path) -> Result<Uri> {
+    pub(crate) async fn open_document(&mut self, file_path: &Path) -> Result<Uri> {
         let content = read_to_string(file_path).map_err(CoderagError::Io)?;
         let uri = path_to_file_uri(file_path)?;
 
@@ -264,7 +288,7 @@ impl LspClient {
         Ok(uri)
     }
 
-    async fn close_document(&mut self, uri: &Uri) -> Result<()> {
+    pub(crate) async fn close_document(&mut self, uri: &Uri) -> Result<()> {
         let params = DidCloseTextDocumentParams {
             text_document: TextDocumentIdentifier::new(uri.clone()),
         };
@@ -303,6 +327,41 @@ impl LspClient {
         }
         let _ = self.close_document(&uri).await;
         Ok(symbols)
+    }
+
+    pub(crate) async fn document_symbols_with_uri(
+        &mut self,
+        uri: &Uri,
+        captured: &mut Vec<Value>,
+    ) -> Result<Vec<DocumentSymbol>> {
+        // TODO This number of retries should be configurable
+        for attempt in 0..5 {
+            // give it a moment to parse the file.
+            // whitout this it may return an empty result for the first request
+            if attempt > 0 {
+                let delay = Duration::from_millis(200 * (attempt + 1));
+                tokio::time::sleep(delay).await;
+            }
+
+            // work_done_progress_params / partial_result_params: LSP 3.17
+            // optional mixins for progress reporting and incremental results.
+            // Both default to None (disabled) since coderag has no progress UI.
+            let params = DocumentSymbolParams {
+                text_document: TextDocumentIdentifier::new(uri.clone()),
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            };
+
+            let result = self
+                .request_capturing("textDocument/documentSymbol", params, captured)
+                .await?;
+            let symbols = parse_document_symbols(result)?;
+            if !symbols.is_empty() {
+                return Ok(symbols);
+            }
+            tracing::debug!("documentSymbol attempt {} empty, retrying", attempt + 1);
+        }
+        Ok(Vec::new())
     }
 
     pub async fn references_at(&mut self, file_path: &Path, line: u32, character: u32) -> Result<Vec<String>> {
