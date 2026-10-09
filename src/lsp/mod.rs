@@ -72,7 +72,7 @@ impl SymbolKind {
 
 // --- Helpers ---
 
-fn parse_document_symbols(result: Value) -> Result<Vec<DocumentSymbol>> {
+pub(crate) fn parse_document_symbols(result: Value) -> Result<Vec<DocumentSymbol>> {
     // from: LSP Specification 3.17 - textDocument/documentSymbol
     //       result: DocumentSymbol[] | SymbolInformation[] | null
     // that means that result can be "null" if the LSP haven't parsed

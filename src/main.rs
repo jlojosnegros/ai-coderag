@@ -65,7 +65,8 @@ async fn main() -> anyhow::Result<()> {
 async fn run_serve(config: CoderagConfig) -> anyhow::Result<()> {
     tracing::info!("Starting coderag MCP server v{}", env!("CARGO_PKG_VERSION"));
 
-    let server = CoderagServer::new(config);
+    let project_root = std::env::current_dir()?;
+    let server = CoderagServer::new(config, &project_root);
 
     // serve(stdio()) does two things:
     // 1. Performs the MCP initialize handshake with the client

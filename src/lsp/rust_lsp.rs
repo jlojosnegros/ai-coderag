@@ -43,18 +43,33 @@ impl LanguageLsp for RustLsp {
         }
     }
 
+    /// Declares which LSP features this clients supports.
+    ///
+    /// The server reads these capabilities during the initialize handshake
+    /// and enables or disables endpoints accordingly. If a capability is
+    /// not declared here, the server may reject the corresponding request
+    /// or return empty results silently
     fn initialize_capabilities(&self) -> lsp_types::ClientCapabilities {
         ClientCapabilities {
             text_document: Some(TextDocumentClientCapabilities {
+                // Enables textDocument/documentSymbol with nested children.
+                // Without this the server returns flat SymbolInformation[]
+                // instead of hierarchical DocumentSymbol[] with selectionRange.
                 document_symbol: Some(DocumentSymbolClientCapabilities {
-                    // Request hierarchical symbols ( that means a
-                    // DocumentSymbol[] with selectionRange and children)
-                    // instead of a flat SymbolInformation[].
-                    // Without this, references_at() cannot position accurately,
                     hierarchical_document_symbol_support: Some(true),
                     ..Default::default()
                 }),
+                // Enables textDocument/references ( find all call sites of a symbol)
                 references: Some(Default::default()),
+                // Enables textDocument/definition (jump to where a symbol is defined)
+                definition: Some(Default::default()),
+                // Enables three-step call hierarchy protocol:
+                //    textDocument/prepareCallHierarchy -> callHierarchy/incomingCalls
+                //                                      -> callHierarchy/outgoingCalls
+                call_hierarchy: Some(Default::default()),
+                // Tells the server to push textDocument/publishDiagnostics
+                // notifications (errors , warnings) as it analyzes files.
+                publish_diagnostics: Some(Default::default()),
                 ..Default::default()
             }),
             ..Default::default()

@@ -1,8 +1,8 @@
-use std::sync::Arc;
+use std::{collections::HashMap, path::Path, sync::Arc};
 
 use rmcp::tool_router;
 
-use crate::{CoderagConfig, registry::LanguageRegistry};
+use crate::{CoderagConfig, lsp::LspHandle, registry::LanguageRegistry};
 
 pub(crate) mod response;
 
@@ -13,18 +13,45 @@ pub(crate) mod response;
 /// The `#[tool_router]` macro generates dispatch code that routes incoming `tools/call`
 /// requests to the right method.
 pub struct CoderagServer {
-    // TODO: temporal delete
-    #[allow(dead_code)]
     config: CoderagConfig,
-    // TODO: temporal delete
-    #[allow(dead_code)]
     registry: Arc<LanguageRegistry>,
+    lsp_handles: HashMap<String, LspHandle>,
 }
 
 impl CoderagServer {
-    pub fn new(config: CoderagConfig) -> Self {
+    /// Create a new server and eagerly start LSP actors for configured languages.
+    ///
+    /// Each actor launches its language server process in the background.
+    /// While the LSP is initializing, tools that need it will get LspStatus::Initializing,
+    /// and can fall back on tree-sitter
+    pub fn new(config: CoderagConfig, project_root: &Path) -> Self {
         let registry = Arc::new(LanguageRegistry::with_builtins());
-        Self { config, registry }
+        let mut lsp_handles = HashMap::new();
+
+        if config.lsp.enabled {
+            for lsp_provider in registry.lsp_providers() {
+                let lang_id = lsp_provider.language_id().to_string();
+
+                if let Some(root) = lsp_provider.find_project_root(project_root) {
+                    let default_args = lsp_provider.default_args();
+                    let default_command = lsp_provider.default_command();
+                    let server_config = config.lsp.server_config(&lang_id, default_command, &default_args);
+                    let handle = LspHandle::spawn(lsp_provider.as_ref(), &server_config, &root);
+                    lsp_handles.insert(lang_id, handle);
+                }
+            }
+        }
+
+        Self {
+            config,
+            registry,
+            lsp_handles,
+        }
+    }
+
+    /// Get the LSP handle for a given language, if one exists.
+    pub fn lsp_handle(&self, language_id: &str) -> Option<&LspHandle> {
+        self.lsp_handles.get(language_id)
     }
 }
 
@@ -45,7 +72,6 @@ impl CoderagServer {
 // are thin (2 -5 lines each) because they delegate to business logic in other modules
 // (lps/, parser/, embed/, store/)
 
-
 #[tool_router(server_handler)]
 impl CoderagServer {
     /// Return server version
@@ -59,7 +85,6 @@ impl CoderagServer {
         format!("coderag {}", env!("CARGO_PKG_VERSION"))
     }
 }
-
 
 /// Convert any displayable error into a tool-level error response.
 ///
@@ -78,7 +103,6 @@ impl CoderagServer {
 pub fn tool_error(err: impl std::fmt::Display) -> rmcp::model::CallToolResult {
     rmcp::model::CallToolResult::error(vec![rmcp::model::ContentBlock::text(err.to_string())])
 }
-
 
 #[cfg(test)]
 mod tests {

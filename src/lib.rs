@@ -15,7 +15,7 @@ pub use config::CoderagConfig;
 pub use domain::{Chunk, ChunkId, ChunkMetadata, ChunkType, Language, ScoredChunk};
 pub use embed::CandleProvider;
 pub use error::{CoderagError, Result};
-pub use lsp::RustLsp;
+pub use lsp::{LspHandle, LspStatus, RustLsp};
 pub use mcp::{
     CoderagServer,
     response::{Freshness, ResponseMeta, SourceLevel},
