@@ -183,7 +183,6 @@ mod tests {
 
     use crate::{LspHandle, LspStatus, lsp::actor::LspCommand};
 
-
     fn make_handle(initial_status: LspStatus) -> (LspHandle, mpsc::Receiver<LspCommand>, watch::Sender<LspStatus>) {
         let (cmd_tx, cmd_rx) = mpsc::channel(1);
         let (status_tx, status_rx) = watch::channel(initial_status);
@@ -196,5 +195,35 @@ mod tests {
         let (handle, _cmd_rx, _status_tx) = make_handle(LspStatus::Initializing);
         assert!(!handle.is_ready());
         assert_eq!(handle.status(), LspStatus::Initializing);
+    }
+
+    #[test]
+    fn status_ready_is_ready() {
+        let (handle, _cmd_rx, _status_tx) = make_handle(LspStatus::Ready);
+        assert!(handle.is_ready());
+        assert_eq!(handle.status(), LspStatus::Ready);
+    }
+
+    #[test]
+    fn status_failed_preserves_reason() {
+        let (handle, _cmd_rx, _status_tx) = make_handle(LspStatus::Failed("binary not found".into()));
+        assert!(!handle.is_ready());
+        assert_eq!(handle.status(), LspStatus::Failed("binary not found".into()));
+    }
+
+    #[test]
+    fn status_updates_when_actor_changes_it() {
+        let (handle, _cmd_rx, status_tx) = make_handle(LspStatus::Initializing);
+        assert!(!handle.is_ready());
+
+        let _ = status_tx.send(LspStatus::Ready);
+        assert!(handle.is_ready());
+        assert_eq!(handle.status(), LspStatus::Ready);
+    }
+
+    #[test]
+    fn language_id_returns_configured_value() {
+        let (handle, _cmd_rx, _status_tx) = make_handle(LspStatus::Initializing);
+        assert_eq!(handle.language_id(), "rust");
     }
 }

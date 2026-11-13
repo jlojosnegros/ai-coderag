@@ -129,4 +129,22 @@ mod tests {
             "references capability must be declared"
         );
     }
+
+    #[test]
+    fn capabilities_include_definition() {
+        let caps = RustLsp.initialize_capabilities();
+        assert!(caps.text_document.as_ref().unwrap().definition.is_some());
+    }
+
+    #[test]
+    fn capabilities_include_call_hierarchy() {
+        let caps = RustLsp.initialize_capabilities();
+        assert!(caps.text_document.as_ref().unwrap().call_hierarchy.is_some());
+    }
+
+    #[test]
+    fn capabilities_include_publish_diagnostics() {
+        let caps = RustLsp.initialize_capabilities();
+        assert!(caps.text_document.as_ref().unwrap().publish_diagnostics.is_some());
+    }
 }
