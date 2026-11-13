@@ -2,6 +2,7 @@ pub(crate) mod actor;
 mod client;
 pub mod handle;
 mod rust_lsp;
+mod transport;
 
 use std::path::Path;
 
@@ -11,6 +12,7 @@ pub use rust_lsp::RustLsp;
 use serde_json::Value;
 use url::Url;
 
+pub(crate) use self::transport::LspTransport;
 use crate::{CoderagError, Result};
 /// State of a language server managed by the actor
 ///
@@ -144,7 +146,6 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-
 
     #[test]
     fn initialize_params_includes_hierarchical_support() {

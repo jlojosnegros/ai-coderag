@@ -5,23 +5,22 @@ use std::{
     time::Duration,
 };
 
+use async_trait::async_trait;
 use lsp_types::{
-    ClientCapabilities, DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentSymbolParams, InitializeParams,
-    Location as LspLocation, PartialResultParams, Position, ReferenceContext, ReferenceParams, TextDocumentIdentifier,
-    TextDocumentItem, TextDocumentPositionParams, Uri, WorkDoneProgressParams,
+    ClientCapabilities, DidCloseTextDocumentParams, DidOpenTextDocumentParams, InitializeParams,
+    TextDocumentIdentifier, TextDocumentItem, Uri,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
-    process::{Child, ChildStdin, ChildStdout, Command},
+    process::{Child, ChildStdin, ChildStdout},
     time::timeout,
 };
-use url::Url;
 
 use crate::{
     CoderagError, Result,
-    lsp::{DocumentSymbol, parse_document_symbols, path_to_file_uri},
+    lsp::{LspTransport, path_to_file_uri},
     traits::{LanguageLsp, LspServerConfig},
 };
 
@@ -171,17 +170,16 @@ impl LspClient {
     async fn request_core(
         &mut self,
         method: &str,
-        params: impl Serialize,
+        params: Value,
         mut on_notification: impl FnMut(Value),
     ) -> Result<Value> {
         let id = self.next_id();
-        let params_value =
-            serde_json::to_value(params).map_err(|err| CoderagError::Lsp(format!("serialize params: {err}")))?;
+
         self.send(&json!({
             "jsonrpc": "2.0",
             "id": id,
             "method": method,
-            "params": params_value,
+            "params": params,
         }))
         .await?;
 
@@ -209,25 +207,15 @@ impl LspClient {
     /// Send a request and wait for the response with the matching id.
     /// Discards all notifications that arrive before the response.
     pub(crate) async fn request(&mut self, method: &str, params: impl Serialize) -> Result<Value> {
-        self.request_core(method, params, |msg| {
+        let params_value =
+            serde_json::to_value(params).map_err(|err| CoderagError::Lsp(format!("serialize params: {err}")))?;
+        self.request_core(method, params_value, |msg| {
             tracing::trace!(
                 "Discarding notification: {}",
                 msg.get("method").and_then(serde_json::Value::as_str).unwrap_or("?")
             );
         })
         .await
-    }
-
-    /// Send a request and wait for the response with the matching id.
-    /// Stores all notifications that arrive before the reponse in `captured`
-    /// for later process
-    pub(crate) async fn request_capturing(
-        &mut self,
-        method: &str,
-        params: impl Serialize,
-        captured: &mut Vec<Value>,
-    ) -> Result<Value> {
-        self.request_core(method, params, |msg| captured.push(msg)).await
     }
 
     /// Send notification. No response expected
@@ -262,22 +250,22 @@ impl LspClient {
 
         Ok(())
     }
+}
 
-    /// Cleanly shut down the server.
-    /// Must be called before dropping the client
-    pub async fn shutdown(&mut self) -> Result<()> {
-        let _ = self.request("shutdown", json!(null)).await;
-        let _ = self.notify("exit", json!(null)).await;
-        Ok(())
+#[async_trait]
+impl LspTransport for LspClient {
+    /// Send a request and wait for the response with the matching id.
+    /// Stores all notifications that arrive before the reponse in `captured`
+    /// for later process
+    async fn request_capturing(&mut self, method: &str, params: Value, captured: &mut Vec<Value>) -> Result<Value> {
+        self.request_core(method, params, |msg| captured.push(msg)).await
     }
-
-    // --- LSP queries ---
 
     /// Open a document in the server
     /// required before any textDocument request
-    pub(crate) async fn open_document(&mut self, file_path: &Path) -> Result<Uri> {
-        let content = read_to_string(file_path).map_err(CoderagError::Io)?;
-        let uri = path_to_file_uri(file_path)?;
+    async fn open_document(&mut self, path: &Path) -> Result<Uri> {
+        let content = read_to_string(path).map_err(CoderagError::Io)?;
+        let uri = path_to_file_uri(path)?;
 
         let params = DidOpenTextDocumentParams {
             text_document: TextDocumentItem::new(uri.clone(), self.language_id.clone(), 1, content),
@@ -288,138 +276,19 @@ impl LspClient {
         Ok(uri)
     }
 
-    pub(crate) async fn close_document(&mut self, uri: &Uri) -> Result<()> {
+    async fn close_document(&mut self, uri: &Uri) -> Result<()> {
         let params = DidCloseTextDocumentParams {
             text_document: TextDocumentIdentifier::new(uri.clone()),
         };
         self.notify("textDocument/didClose", params).await
     }
 
-    /// Get all named symbols in a file.
-    /// Returns a list of (name, kond, start_line) tuples
-    /// Line numbers are 0-based (lsp convention)
-    pub async fn document_symbols(&mut self, file_path: &Path) -> Result<Vec<DocumentSymbol>> {
-        let uri = self.open_document(file_path).await?;
-
-        let mut symbols = Vec::new();
-        // TODO This number of retries should be configurable
-        for attempt in 0..5 {
-            let delay = Duration::from_millis(200 * (attempt + 1));
-            // give it a moment to parse the file.
-            // whitout this it may return an empty result for the first request
-            tokio::time::sleep(delay).await;
-
-            // work_done_progress_params / partial_result_params: LSP 3.17
-            // optional mixins for progress reporting and incremental results.
-            // Both default to None (disabled) since coderag has no progress UI.
-            let params = DocumentSymbolParams {
-                text_document: TextDocumentIdentifier::new(uri.clone()),
-                work_done_progress_params: WorkDoneProgressParams::default(),
-                partial_result_params: PartialResultParams::default(),
-            };
-
-            let result = self.request("textDocument/documentSymbol", params).await?;
-            symbols = parse_document_symbols(result)?;
-            if !symbols.is_empty() {
-                break;
-            }
-            tracing::debug!("documentSymbol attemt {} empty, retrying", attempt + 1);
-        }
-        let _ = self.close_document(&uri).await;
-        Ok(symbols)
-    }
-
-    pub(crate) async fn document_symbols_with_uri(
-        &mut self,
-        uri: &Uri,
-        captured: &mut Vec<Value>,
-    ) -> Result<Vec<DocumentSymbol>> {
-        // TODO This number of retries should be configurable
-        for attempt in 0..5 {
-            // give it a moment to parse the file.
-            // whitout this it may return an empty result for the first request
-            if attempt > 0 {
-                let delay = Duration::from_millis(200 * (attempt + 1));
-                tokio::time::sleep(delay).await;
-            }
-
-            // work_done_progress_params / partial_result_params: LSP 3.17
-            // optional mixins for progress reporting and incremental results.
-            // Both default to None (disabled) since coderag has no progress UI.
-            let params = DocumentSymbolParams {
-                text_document: TextDocumentIdentifier::new(uri.clone()),
-                work_done_progress_params: WorkDoneProgressParams::default(),
-                partial_result_params: PartialResultParams::default(),
-            };
-
-            let result = self
-                .request_capturing("textDocument/documentSymbol", params, captured)
-                .await?;
-            let symbols = parse_document_symbols(result)?;
-            if !symbols.is_empty() {
-                return Ok(symbols);
-            }
-            tracing::debug!("documentSymbol attempt {} empty, retrying", attempt + 1);
-        }
-        Ok(Vec::new())
-    }
-
-    pub async fn references_at(&mut self, file_path: &Path, line: u32, character: u32) -> Result<Vec<String>> {
-        let uri = self.open_document(file_path).await?;
-
-        // Give it to analyze the file.
-        tokio::time::sleep(Duration::from_millis(500)).await;
-
-        // text_document_position: which file + cursor position to find references for.
-        // context.include_declaration: false = exclude the definition itself,
-        //   only return call sites (callers).
-        // work_done_progress_params / partial_result_params: LSP 3.17
-        //   optional mixins, disabled (None) since coderag has no progress UI.
-        let params = ReferenceParams {
-            text_document_position: TextDocumentPositionParams::new(
-                TextDocumentIdentifier::new(uri.clone()),
-                Position::new(line, character),
-            ),
-            work_done_progress_params: WorkDoneProgressParams::default(),
-            partial_result_params: PartialResultParams::default(),
-            context: ReferenceContext {
-                include_declaration: false,
-            },
-        };
-
-        let result = self.request("textDocument/references", params).await?;
-
-        let _ = self.close_document(&uri).await;
-
-        let locations: Vec<LspLocation> = serde_json::from_value(result).unwrap_or_else(|err| {
-            tracing::warn!("references_at: failed to parse response: {err}");
-            Vec::new()
-        });
-        let mut callers = Vec::new();
-
-        for loc in locations {
-            // lsp_types::Uri has no to_file_path(), parse as url::Url first.
-            let url = match Url::parse(loc.uri.as_str()) {
-                Ok(u) => u,
-                Err(e) => {
-                    tracing::warn!("references_at: skipping malformed URI '{}': {e}", loc.uri.as_str());
-                    continue;
-                },
-            };
-
-            if !url.path().starts_with(self.path_filter.as_str()) {
-                continue;
-            }
-            if let Ok(ref_path) = url.to_file_path() {
-                let display = format!(
-                    "{}:{}",
-                    ref_path.file_name().unwrap_or_default().to_string_lossy(),
-                    loc.range.start.line + 1
-                );
-                callers.push(display);
-            }
-        }
-        Ok(callers)
+    /// Cleanly shut down the server.
+    /// Must be called before dropping the client
+    async fn shutdown(&mut self) -> Result<()> {
+        let _ = self.request("shutdown", json!(null)).await;
+        let _ = self.notify("exit", json!(null)).await;
+        Ok(())
     }
 }
 
