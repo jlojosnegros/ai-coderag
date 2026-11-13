@@ -181,12 +181,10 @@ impl LspHandle {
 mod tests {
     use tokio::sync::{mpsc, watch};
 
-use crate::{LspHandle, LspStatus, lsp::actor::LspCommand};
+    use crate::{LspHandle, LspStatus, lsp::actor::LspCommand};
 
 
-    fn make_handle(
-        initial_status: LspStatus,
-    ) -> (LspHandle, mpsc::Receiver<LspCommand>, watch::Sender<LspStatus>) {
+    fn make_handle(initial_status: LspStatus) -> (LspHandle, mpsc::Receiver<LspCommand>, watch::Sender<LspStatus>) {
         let (cmd_tx, cmd_rx) = mpsc::channel(1);
         let (status_tx, status_rx) = watch::channel(initial_status);
         let handle = LspHandle::new(cmd_tx, status_rx, "rust".into());
@@ -195,7 +193,7 @@ use crate::{LspHandle, LspStatus, lsp::actor::LspCommand};
 
     #[test]
     fn status_initializing_is_not_ready() {
-        let (handle,_cmd_rx, _status_tx) = make_handle(LspStatus::Initializing);
+        let (handle, _cmd_rx, _status_tx) = make_handle(LspStatus::Initializing);
         assert!(!handle.is_ready());
         assert_eq!(handle.status(), LspStatus::Initializing);
     }

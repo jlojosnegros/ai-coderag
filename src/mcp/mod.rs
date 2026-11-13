@@ -106,6 +106,8 @@ pub fn tool_error(err: impl std::fmt::Display) -> rmcp::model::CallToolResult {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use crate::{
         CoderagConfig,
         mcp::{CoderagServer, tool_error},
@@ -115,12 +117,24 @@ mod tests {
     fn server_new_creates_successfully() {
         // Verifies that the constructor initializes without panic.
         // If LanguageRegistry::with_builtins() fails, this test catches it.
-        let _server = CoderagServer::new(CoderagConfig::default());
+
+        let mut config = CoderagConfig::default();
+        // we do not need to spawn an LSP process for this test.
+        config.lsp.enabled = false;
+
+        let project_root_path = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let _server = CoderagServer::new(config, project_root_path);
     }
 
     #[test]
     fn version_tool_returns_package_version() {
-        let server = CoderagServer::new(CoderagConfig::default());
+        let mut config = CoderagConfig::default();
+        // we do not need to spawn an LSP process for this test.
+        config.lsp.enabled = false;
+
+        let project_root_path = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let server = CoderagServer::new(config, project_root_path);
+
         let result = server.version();
         assert!(
             result.starts_with("coderag "),
