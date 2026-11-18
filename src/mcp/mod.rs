@@ -1,10 +1,11 @@
+pub(crate) mod format;
+pub(crate) mod response;
+
 use std::{collections::HashMap, path::Path, sync::Arc};
 
 use rmcp::tool_router;
 
 use crate::{CoderagConfig, lsp::LspHandle, registry::LanguageRegistry};
-
-pub(crate) mod response;
 
 /// Central MCP server struct
 ///
